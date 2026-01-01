@@ -27,11 +27,15 @@
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
+#include <functional>
 #include <iostream>
 #include <limits>
+#include <map>
+#include <memory>
 #include <numeric>
 #include <optional>
 #include <string_view>
+#include <variant>
 #include <vector>
 
 namespace pp::internal
@@ -43,7 +47,8 @@ namespace pp::internal
   /// Constant type T if B is true, non const otherwise
   template <bool B,
 	    typename T>
-  using ConstIf=std::conditional_t<B,const T,T>;
+  using ConstIf=
+    std::conditional_t<B,const T,T>;
   
   /// Implements static polymorphism via CRTP, while we wait for C++-23
   template <typename T>
@@ -426,6 +431,18 @@ namespace pp::internal
       }
     else
       return {false,std::distance(v.begin(),it)};
+  }
+  
+  /////////////////////////////////////////////////////////////////
+  ///////////////////////// Variants //////////////////////////////
+  /////////////////////////////////////////////////////////////////
+  
+  std::string variantInnerTypeName(const auto& v)
+  {
+    return std::visit([](const auto& x)
+    {
+      return typeid(decltype(x)).name();
+    },v);
   }
   
   /////////////////////////////////////////////////////////////////
@@ -4424,6 +4441,140 @@ namespace pp::internal
     
     return createParseTree<specs>(grammar,input);
   }
+  
+  /////////////////////////////////////////////////////////////////
+  
+  template <typename T,
+	    typename ST=T>
+  struct ParseTreeExecutor
+  {
+    using StackEl=
+      std::shared_ptr<T>;
+    
+    using Stack=
+      std::vector<StackEl>;
+    
+    std::map<std::string,std::function<StackEl(Stack&)>> actions;
+    
+    StackEl execParseTree(const std::vector<FlattenedParseTreeNode>& pt) const
+    {
+      Stack stack;
+      
+      for(size_t iPt=0;iPt<pt.size();iPt++)
+	{
+	  const auto& [txt,isReduce,n]=pt[iPt];
+	  
+	  if(const std::string_view tmp{txt.first,txt.second};not isReduce)
+	    {
+	      diagnostic("Push string: ",tmp,"\n");
+	      stack.push_back(std::make_shared<T>((ST)std::string(tmp)));
+	    }
+	  else
+	    {
+	      diagnostic("Reducing ",n," symbols from stack of size ",stack.size(),"\n");
+	      
+	      diagnostic("Stack types:\n");
+	      for(const auto& s : stack)
+		diagnostic(" ",variantInnerTypeName(*s),"\n");
+	      
+	      if(tmp=="")
+		{
+		  diagnostic(" (no action)\n");
+		  if(iPt+1==pt.size())
+		    diagnostic(" last reduction, avoiding remove from the stack\n");
+		  else
+		    {
+		      stack.erase(stack.end()-n,stack.end());
+		      stack.push_back(std::make_shared<T>(ST(std::monostate{})));
+		    }
+		}
+	      else
+		{
+		  diagnostic(" with action: \"",tmp,"\"\n");
+		  
+		  auto actionNameEnd=tmp.begin();
+		  while(actionNameEnd!=tmp.end() and not (*actionNameEnd=='('))
+		    actionNameEnd++;
+		  
+		  std::string_view action{tmp.begin(),actionNameEnd};
+		  std::vector<size_t> argsIdList;
+		  if(actionNameEnd!=tmp.end())
+		    {
+		      diagnostic("action \"",tmp,"\" has args, action name: ",action,"\n");
+		      
+		      auto c=
+			actionNameEnd+1;
+		      
+		      while((*c)!=')' and c!=tmp.end())
+			{
+			  size_t i=0;
+			  while(*c!=',' and *c!=')' and c!=tmp.end())
+			    {
+			      if(*c<'0' or *c>'9')
+				errorEmitter("while parsing action \"",tmp,"\" matched \"",std::string_view{tmp.begin(),c},"\" and then unexpected symbol \'",*c,"'");
+			      
+			      i=i*10+(*c-'0');
+			      c++;
+			    }
+			  
+			  if(i>=n)
+			    errorEmitter("while parsing action \"",tmp,"\" encountered argument ",i," greater than the number of parsed symbols, ",n);
+			  argsIdList.push_back(i);
+			  
+			  if(*c!=')')
+			    c++;
+			}
+		      
+		      if(c==tmp.end())
+			errorEmitter("while parsing action ",action," matched \"",std::string_view{tmp.begin(),c},"\" but not the matching ')'");
+		    }
+		  else
+		    {
+		      argsIdList.resize(n);
+		      std::iota(argsIdList.begin(),argsIdList.end(),0);
+		    }
+		  
+		  if(const auto af=
+		     actions.find((std::string)action);
+		     af==actions.end())
+		    errorEmitter("action \"",action,"\" not registered");
+		  else
+		    {
+		      Stack subNodes(argsIdList.size());
+		      for(size_t i=0;i<argsIdList.size();i++)
+			{
+			  const size_t iStack=stack.size()-n+argsIdList[i];
+			  subNodes[i]=stack[iStack];
+			  diagnostic(" passing as argument ",i," the stack symbol ",iStack,", of type ",variantInnerTypeName(*subNodes[i])," to stack\n");
+			}
+		      
+		      stack.erase(stack.end()-n,stack.end());
+		      if(auto p=af->second(subNodes))
+			{
+			  diagnostic(" pushing returned symbol, of type ",variantInnerTypeName(*p)," to stack\n");
+			  stack.push_back(p);
+			}
+		      else
+			diagnostic(" no returned symbol\n");
+		    }
+		}
+	      
+	      diagnostic(" new stack size: ",stack.size(),"\n");
+	      
+	      diagnostic("Stack types:\n");
+	      for(const auto& s : stack)
+		diagnostic(" ",variantInnerTypeName(*s),"\n");
+	    }
+	}
+      
+      if(const size_t n=stack.size();n!=1)
+	errorEmitter("stack size is ",n," should contain precisely 1 element");
+      
+      return std::move(stack.front());
+    }
+  };
+  
+  /////////////////////////////////////////////////////////////////
 }
 
 namespace pp
@@ -4439,6 +4590,8 @@ namespace pp
   using pp::internal::Grammar;
   //using pp::internal::GrammarCt;
   using pp::internal::createGrammar;
+  
+  using pp::internal::ParseTreeExecutor;
 }
 
 #endif
