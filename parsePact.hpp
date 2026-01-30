@@ -34,6 +34,7 @@
 #include <memory>
 #include <numeric>
 #include <optional>
+#include <set>
 #include <string_view>
 #include <variant>
 #include <vector>
@@ -66,6 +67,18 @@ namespace pp::internal
       return *(const T*)this;
     }
   };
+  
+  /// Overload pattern
+  template <typename...Ts>
+  struct Overload :
+    Ts...
+  {
+    using Ts::operator()...;
+  };
+  
+  /// Deducing guide for overload pattern
+  template <typename...Ts>
+  Overload(Ts...) -> Overload<Ts...>;
   
   /////////////////////////////////////////////////////////////////
   //////// Basic helpful types to hold constexpr data /////////////
@@ -434,18 +447,6 @@ namespace pp::internal
   }
   
   /////////////////////////////////////////////////////////////////
-  ///////////////////////// Variants //////////////////////////////
-  /////////////////////////////////////////////////////////////////
-  
-  std::string variantInnerTypeName(const auto& v)
-  {
-    return std::visit([](const auto& x)
-    {
-      return typeid(decltype(x)).name();
-    },v);
-  }
-  
-  /////////////////////////////////////////////////////////////////
   ///////////////////////// Diagnostic ////////////////////////////
   /////////////////////////////////////////////////////////////////
   
@@ -470,6 +471,29 @@ namespace pp::internal
     if(not std::is_constant_evaluated())
       if(verbose)
 	((std::cout<<args),...);
+  }
+  
+  /////////////////////////////////////////////////////////////////
+  ///////////////////////// Variants //////////////////////////////
+  /////////////////////////////////////////////////////////////////
+  
+  std::string variantInnerTypeName(const auto& v)
+  {
+    return std::visit([](const auto& x)
+    {
+      return typeid(decltype(x)).name();
+    },v);
+  }
+  
+  template <typename T,
+	    typename V>
+  T& unvariant(V& v)
+  {
+    T* u=std::get_if<T>(&v);
+    if(u==nullptr)
+      errorEmitter("expecting ",typeid(T).name(),", obtained other type");
+    
+    return *u;
   }
   
   /////////////////////////////////////////////////////////////////
@@ -813,6 +837,30 @@ namespace pp::internal
     return c;
   }
   
+  inline std::string unescapeString(const std::string& in)
+  {
+    std::string out;
+    
+    bool esc=false;
+    
+    for(size_t i=1;i<in.length()-1;i++)
+      if(esc)
+	{
+	  out+=maybeEscape(in[i]);
+	  esc=false;
+	}
+      else
+	if(in[i]=='\\')
+	  esc=true;
+	else
+	  out+=in[i];
+    
+    if(esc)
+      errorEmitter("String ended while escaping");
+    
+    return out;
+  }
+  
   /// Collect all info on char classes
   struct CharClasses
   {
@@ -1034,7 +1082,7 @@ namespace pp::internal
 	diagnostic("  parsing char: ",ref.front(),"\n");
       else
 	diagnostic("  no char can be parsed\n");
-      diagnostic((accepting?"accepted":"not accepted")," (expected char: ",c,")\n");
+      diagnostic((accepting?"accepted":"not accepted")," (expected char: '",c,"')\n");
       
       if(accepting)
 	advance();
@@ -1131,6 +1179,23 @@ namespace pp::internal
 	}
       
       return '\0';
+    }
+    
+    /// Matches an int
+    constexpr std::optional<int> matchInt()
+    {
+      int iN{};
+      bool matched{};
+      while(char r=matchAnyCharIn("0123456789"))
+	{
+	  iN=iN*10+(r-'0');
+	  matched=true;
+	}
+      
+      if(matched)
+	return iN;
+      else
+	return {};
     }
     
     /// Matches a line of comment beginning with "//"
@@ -2392,8 +2457,8 @@ namespace pp::internal
     /// Possible symbol specifiying the precedence of the production
     std::optional<size_t> precedenceSymbol;
     
-    /// Name of the action to be accomplished when matching
-    std::string_view action;
+    /// Index of the action to be accomplished when matching
+    std::optional<size_t> iAction;
     
     /// Returns the number of symbols on the rhs
     constexpr size_t nRhs() const
@@ -2438,6 +2503,72 @@ namespace pp::internal
 	res&=symbols[iRhsList[position++]].nullable;
       
       return res;
+    }
+  };
+  
+  struct SubNodeId
+  {
+    int pos;
+  };
+  
+  using GrammarActionPar=
+    std::variant<std::string_view,int,SubNodeId>;
+  
+  struct GrammarAction
+  {
+    std::string_view name;
+    
+    std::vector<GrammarActionPar> actArgs;
+    
+    constexpr GrammarAction(std::string_view actionString)
+    {
+      diagnostic("going to parse action string: ",actionString,"\n");
+      
+      StringMatcher actionMatcher{actionString};
+      name=actionMatcher.matchId();
+      if(name.empty())
+	errorEmitter("action string %s does not start with an id",actionString);
+      else
+	diagnostic("matched action: ",name,"\n");
+      
+      if(actionMatcher.matchChar('('))
+	{
+	  bool matchedSomething{};
+	  bool matchedEnd{};
+	  while((not actionMatcher.ref.empty()) and
+		(not (matchedEnd=actionMatcher.matchChar(')')) and
+		 ((not matchedSomething) or
+		  actionMatcher.matchChar(','))))
+	    {
+	      if(actionMatcher.matchChar('$'))
+		{
+		  diagnostic("found begin of subnode reference\n");
+		  if(std::optional<int> id=actionMatcher.matchInt())
+		    {
+		      diagnostic("argument n.",actArgs.size()," of the action is a reference to subnode[",*id,"]\n");
+		      actArgs.emplace_back(SubNodeId{*id});
+		    }
+		  else
+		    errorEmitter("in action string \"",actionMatcher.ref.begin(),"\" not matched the subnode id");
+		}
+	      else
+		if(std::optional<int> id=actionMatcher.matchInt())
+		  {
+		    diagnostic("argument \"",actArgs.size(),"\" of the action is the number",*id);
+		    actArgs.emplace_back(GrammarActionPar{*id});
+		  }
+		else
+		  if(std::string_view s=actionMatcher.matchRegex();not s.empty())
+		    {
+		      diagnostic("argument ",actArgs.size()," of the action is the string",s);
+		      actArgs.emplace_back(GrammarActionPar{s});
+		    }
+		  else
+		    errorEmitter("in action string ",actionMatcher.ref.begin()," not matched a possible arg");
+	      
+	      matchedSomething=true;
+	    }
+	}
     }
   };
   
@@ -2663,6 +2794,8 @@ namespace pp::internal
     /// Number of symbols
     const size_t nSymbols;
     
+    const Stack2DVectorPars actionPars;
+    
     const Stack2DVectorPars productionPars;
     
     const size_t nItems;
@@ -2680,6 +2813,7 @@ namespace pp::internal
     {
       return
 	nSymbols==0 and
+	actionPars.isNull() and
 	productionPars.isNull() and
 	nItems==0 and
 	stateItemsPars.isNull() and
@@ -2716,6 +2850,8 @@ namespace pp::internal
     size_t currentPrecedence{};
     
     std::vector<GrammarProduction> productions;
+    
+    std::vector<std::string_view> actionStrings;
     
     std::vector<std::string_view> whitespaceRegexList;
     
@@ -2792,12 +2928,6 @@ namespace pp::internal
     constexpr inline const GrammarProduction& production(const size_t& iProduction) const
     {
       return productions[iProduction];
-    }
-    
-    /// Returns the action corresponding to a given production
-    constexpr inline const std::string_view& action(const size_t& iProduction) const
-    {
-      return production(iProduction).action;
     }
     
     /// Finds or insert a symbol
@@ -2930,14 +3060,14 @@ namespace pp::internal
 		      matchin.matchWhiteSpaceOrComments();
 		    }
 		  
-		  std::string_view action{};
+		  std::string_view actionString{};
 		  if(matchin.matchChar('['))
 		    {
 		      auto beg=matchin.ref.begin();
 		      while(const char c=matchin.matchPossiblyEscapedCharNotIn("]"))
 			diagnostic("including char '",c,"' in the action");
 		      
-		      action={beg,matchin.ref.begin()};
+		      actionString={beg,matchin.ref.begin()};
 		      
 		      if(not matchin.matchChar(']'))
 			errorEmitter("Expected end of action ']'");
@@ -2946,7 +3076,10 @@ namespace pp::internal
 		    }
 		  
 		  symbols[iLhs].iProductions.push_back(productions.size());
-		  productions.emplace_back(iLhs,iRhss,iPrecedenceSymbol,action);
+		  
+		  const size_t iAction=maybeAddToUniqueVector(actionStrings,actionString).second;
+		  
+		  productions.emplace_back(iLhs,iRhss,iPrecedenceSymbol,iAction);
 		  
 		  diagnostic("ADDED production: \"",describe(productions.back()),"\"\n");
 		}
@@ -3186,7 +3319,7 @@ namespace pp::internal
 	      {
 		const size_t /* don't take by reference! */iProduction=symbol.iProductions.front();
 		
-		if(const GrammarProduction& production=productions[iProduction];production.iRhsList.size()==1 and production.action.empty())
+		if(const GrammarProduction& production=productions[iProduction];production.iRhsList.size()==1 and not production.iAction)
 		  if(const size_t /* don't take by reference! */ iActualSymbol=production.iRhsList.front();1)//symbols[iActualSymbol].type==GrammarSymbol::Type::TERMINAL_SYMBOL)
 		    {
 		      removed=true;
@@ -3856,6 +3989,16 @@ namespace pp::internal
     {
       return
 	{.nSymbols=symbols.size(),
+	 .actionPars{.nEntries=reduce(actionStrings,
+				      [](const GrammarAction& a,
+					 std::optional<size_t> x=std::nullopt)
+				      {
+					if(not x)
+					  x=0;
+					
+					return *x+a.actArgs.size();
+				      }),
+	   .nRows=actionStrings.size()},
 	 .productionPars{.nEntries=reduce(productions,
 					  [](const GrammarProduction& p,
 					     std::optional<size_t> x=std::nullopt)
@@ -3895,8 +4038,11 @@ namespace pp::internal
     /// Index of the symbols representing a production, for each state
     Stack2DVector<size_t,Specs.productionPars> productionsData;
     
+    /// Action pars associated to each production
+    Stack2DVector<GrammarActionPar,Specs.actionPars> actionsData;
+    
     /// Action associated to each production
-    Array<std::string_view,Specs.productionPars.nRows> actions;
+    Array<std::string_view,Specs.actionPars.nRows> actionsName;
     
     /// Items representing the states, defined in term of index of production and position
     Array<GrammarItem,Specs.nItems> items;
@@ -3919,6 +4065,12 @@ namespace pp::internal
     static constexpr size_t nStates()
     {
       return Specs.transitionsOfStatesPars.nRows;
+    }
+    
+    /// Returns the number of actions
+    static constexpr size_t nActions()
+    {
+      return Specs.actionPars.nRows;
     }
     
     /// Returns the number of productions
@@ -3978,17 +4130,11 @@ namespace pp::internal
 	return out;
       }
     };
-    
+  
     /// Returns a reference to a production
     constexpr inline ProductionRef production(const size_t& iProduction) const
     {
       return {this,iProduction};
-    }
-    
-    /// Returns the action corresponding to a given production
-    constexpr inline const std::string_view& action(const size_t& iProduction) const
-    {
-      return actions[iProduction];
     }
     
     /// Reference to an item
@@ -4173,9 +4319,14 @@ namespace pp::internal
       transitionsOfStatesData.fillWith([&oth](const size_t& iState)->const std::vector<GrammarTransition>&{return oth.transitionsOfStates[iState];});
       
       std::copy(oth.iSymbolOfRegex.begin(),oth.iSymbolOfRegex.end(),iSymbolOfRegex.begin());
-      
-      for(size_t iProduction=0;iProduction<nProductions();iProduction++)
-	actions[iProduction]=oth.productions[iProduction].action;
+
+      std::vector<GrammarAction> actions;
+      for(size_t iAction=0;iAction<nActions();iAction++)
+	{
+	  actions.emplace_back(oth.actionStrings[iAction]);
+	  actionsName[iAction]=actions[iAction].name;
+	}
+      actionsData.fillWith([&actions](const size_t& iAction)->const std::vector<GrammarActionPar>&{return actions[iAction].actArgs;});
       
       regexMatcher=oth.regexMatcher;
     }
@@ -4223,27 +4374,46 @@ namespace pp::internal
     }
   };
   
-  struct FlattenedParseTreeNode
+  struct ShiftNode
   {
-    std::pair<const char*,const char*> txtData;
-    
-    bool isReduce;
-    
-    constexpr std::string_view txt() const
-    {
-      return {txtData.first,txtData.second};
-    }
+    std::string_view txt;
+  };
+  
+  struct ReduceNode
+  {
+    std::optional<size_t> iAction;
     
     size_t nSubNodes;
   };
   
+  using FlattenedParseTreeNode=
+    std::variant<ShiftNode,ReduceNode>;
+  
   struct ParseTreeNode
   {
-    std::string_view txt;
-    
-    bool isReduce;
+    std::variant<std::string_view,std::optional<size_t>> data;
     
     std::vector<ParseTreeNode> subNodes;
+    
+    constexpr bool isShift() const
+    {
+      return std::get_if<std::string_view>(&data);
+    }
+    
+    constexpr bool isReduce() const
+    {
+      return not isShift();
+    }
+    
+    constexpr std::string_view getShiftString() const
+    {
+      return *std::get_if<std::string_view>(&data);
+    }
+    
+    constexpr std::optional<size_t> getIAction() const
+    {
+      return *std::get_if<std::optional<size_t>>(&data);
+    }
   };
   
   template <ParseTreeSpecs Specs=ParseTreeSpecs{},
@@ -4309,7 +4479,7 @@ namespace pp::internal
 		    if(iNextSymbol!=grammar.iWhitespaceSymbol)
 		      {
 			symbols.emplace(symbols.begin()+cursor,iNextSymbol);
-			parsedSymbols.emplace_back(r->matchedString,false,std::vector<ParseTreeNode>{});
+			parsedSymbols.emplace_back(r->matchedString,std::vector<ParseTreeNode>{});
 		      }
 		    
 		    diagnostic("matched string: \"",r->matchedString,"\" corresponding to symbol ",iNextSymbol," \"",grammar.symbols[iNextSymbol].name,"\"\n");
@@ -4344,17 +4514,15 @@ namespace pp::internal
 		    const size_t end=cursor;
 		    symbols.erase(symbols.begin()+beg,symbols.begin()+end);
 		    
-		    const std::string_view& action=
-		      grammar.action(t.iStateOrProduction);
-		    
-		    ParseTreeNode res{action,isReduce,{std::make_move_iterator(parsedSymbols.begin()+beg),std::make_move_iterator(parsedSymbols.begin()+end)}};
+		    ParseTreeNode res{production.iAction,{std::make_move_iterator(parsedSymbols.begin()+beg),std::make_move_iterator(parsedSymbols.begin()+end)}};
 		    parsedSymbols.erase(parsedSymbols.begin()+beg,parsedSymbols.begin()+end);
 		    parsedSymbols.insert(parsedSymbols.begin()+beg,res);
 		    
 		    states.erase(states.end()-production.nRhs(),states.end());
 		    
 		    cursor-=production.nRhs();
-		    diagnostic("reduction ",action,"\n");
+		    if(std::optional<size_t> iAction=production.iAction)
+		      diagnostic("reduction ",grammar.actionStrings[*iAction],"\n");
 		    symbols.emplace(symbols.begin()+cursor,production.iLhs());
 		  }
 		else
@@ -4383,27 +4551,29 @@ namespace pp::internal
       }
     while(m and not(states.size()==1 and states[0]==0 and symbols.size()==2 and symbols[0]==grammar.iStartSymbol and symbols[1]==grammar.iEndSymbol and input.length()==0));
     
-    std::vector<FlattenedParseTreeNode> res;
-    
+    std::vector<FlattenedParseTreeNode> tree;
     auto fill=
-      [&res](auto self,
-	     const ParseTreeNode& n)->void
+      [&tree](auto self,
+		 const ParseTreeNode& n)->void
       {
 	for(const auto& s : n.subNodes)
 	  self(self,s);
 	
-	res.emplace_back(std::make_pair(n.txt.begin(),n.txt.end()),n.isReduce,n.subNodes.size());
+	if(n.isReduce())
+	  tree.push_back(ReduceNode{.iAction=n.getIAction(),.nSubNodes=n.subNodes.size()});
+	else
+	  tree.push_back(ShiftNode{.txt=n.getShiftString()});
       };
     
     fill(fill,parsedSymbols.front());
     
     if constexpr(Specs.isNull())
-      return res;
+      return tree;
     else
       {
 	std::array<FlattenedParseTreeNode,Specs.nNodes> ctRes;
 	
-	std::copy(res.begin(),res.end(),ctRes.begin());
+	std::copy(tree.begin(),tree.end(),ctRes.begin());
 	
 	return ctRes;
       }
@@ -4454,7 +4624,49 @@ namespace pp::internal
     using Stack=
       std::vector<StackEl>;
     
-    std::map<std::string,std::function<StackEl(Stack&)>> actions;
+    using ActionFun=std::function<StackEl(Stack&)>;
+    
+    struct GrammarActionCallPars
+    {
+      std::string_view name;
+      
+      std::vector<GrammarActionPar> args;
+      
+      ActionFun f;
+    };
+    
+    std::vector<GrammarActionCallPars> actions;
+    
+    ParseTreeExecutor(const std::map<std::string,std::function<StackEl(Stack&)>>& providedActions,
+		      const std::vector<std::string_view>& requiredActions)
+    {
+      diagnostic("\nGoing to match provided and required actions\n----------------------\n");
+      
+      std::set<std::string> used;
+      
+      for(const std::string_view& s : requiredActions)
+	{
+	  diagnostic("Parsing action string: \"",s,"\"\n");
+	  GrammarAction ga{s};
+	  diagnostic("Action has been parsed to name \"",ga.name,"\"\n");
+	  
+	  if(auto f=providedActions.find((std::string)ga.name);f!=providedActions.end())
+	    {
+	      actions.emplace_back(ga.name,ga.actArgs,f->second);
+	      used.emplace(s);
+	    }
+	  else
+	    errorEmitter("required action: \"",ga.name,"\" not found");
+	}
+      
+      std::string unused;
+      for(const std::string_view& s : requiredActions)
+	if(used.find((std::string)s)==used.end())
+	  unused+="   "+(std::string)s+"\n";
+      
+      if(not unused.empty())
+	errorEmitter("provided unused actions:\n",unused);
+    }
     
     StackEl execParseTree(const std::vector<FlattenedParseTreeNode>& pt) const
     {
@@ -4462,22 +4674,24 @@ namespace pp::internal
       
       for(size_t iPt=0;iPt<pt.size();iPt++)
 	{
-	  const auto& [txt,isReduce,n]=pt[iPt];
-	  
-	  if(const std::string_view tmp{txt.first,txt.second};not isReduce)
+	  if(const ShiftNode* sn=std::get_if<ShiftNode>(&pt[iPt]))
 	    {
-	      diagnostic("Push string: ",tmp,"\n");
-	      stack.push_back(std::make_shared<T>((ST)std::string(tmp)));
+	      const std::string_view s=sn->txt;
+	      diagnostic("Push string: ",s,"\n");
+	      stack.push_back(std::make_shared<T>((ST)std::string(s)));
 	    }
 	  else
 	    {
+	      const ReduceNode& rn=*std::get_if<ReduceNode>(&pt[iPt]);
+	      const size_t n=rn.nSubNodes;
+	      
 	      diagnostic("Reducing ",n," symbols from stack of size ",stack.size(),"\n");
 	      
 	      diagnostic("Stack types:\n");
 	      for(const auto& s : stack)
 		diagnostic(" ",variantInnerTypeName(*s),"\n");
 	      
-	      if(tmp=="")
+	      if(not rn.iAction)
 		{
 		  diagnostic(" (no action)\n");
 		  if(iPt+1==pt.size())
@@ -4490,73 +4704,39 @@ namespace pp::internal
 		}
 	      else
 		{
-		  diagnostic(" with action: \"",tmp,"\"\n");
+		  const auto& [name,pars,fun]=actions[*rn.iAction];
 		  
-		  auto actionNameEnd=tmp.begin();
-		  while(actionNameEnd!=tmp.end() and not (*actionNameEnd=='('))
-		    actionNameEnd++;
+		  diagnostic(" with action: \"",name,"\"\n");
 		  
-		  std::string_view action{tmp.begin(),actionNameEnd};
-		  std::vector<size_t> argsIdList;
-		  if(actionNameEnd!=tmp.end())
+		  const size_t nSubNodes=pars.size();
+		  Stack subNodes(nSubNodes);
+		  for(size_t iArg=0;iArg<nSubNodes;iArg++)
 		    {
-		      diagnostic("action \"",tmp,"\" has args, action name: ",action,"\n");
-		      
-		      auto c=
-			actionNameEnd+1;
-		      
-		      while((*c)!=')' and c!=tmp.end())
+		      subNodes[iArg]=
+			std::visit(Overload{[&stack,
+					     &n](const SubNodeId& si)->StackEl
 			{
-			  size_t i=0;
-			  while(*c!=',' and *c!=')' and c!=tmp.end())
-			    {
-			      if(*c<'0' or *c>'9')
-				errorEmitter("while parsing action \"",tmp,"\" matched \"",std::string_view{tmp.begin(),c},"\" and then unexpected symbol \'",*c,"'");
-			      
-			      i=i*10+(*c-'0');
-			      c++;
-			    }
-			  
-			  if(i>=n)
-			    errorEmitter("while parsing action \"",tmp,"\" encountered argument ",i," greater than the number of parsed symbols, ",n);
-			  argsIdList.push_back(i);
-			  
-			  if(*c!=')')
-			    c++;
-			}
-		      
-		      if(c==tmp.end())
-			errorEmitter("while parsing action ",action," matched \"",std::string_view{tmp.begin(),c},"\" but not the matching ')'");
+			  return stack[stack.size()-n+si.pos];
+			},
+			      [](const std::string_view& st)->StackEl
+			      {
+				return std::make_shared<T>((ST)(std::string)st);
+			      },
+			      [](const auto& any)->StackEl
+			      {
+				return std::make_shared<T>((ST)any);
+			      }}
+			,pars[iArg]);
+		    };
+		  
+		  stack.erase(stack.end()-n,stack.end());
+		  if(auto p=fun(subNodes))
+		    {
+		      diagnostic(" pushing returned symbol, of type ",variantInnerTypeName(*p)," to stack\n");
+		      stack.push_back(p);
 		    }
 		  else
-		    {
-		      argsIdList.resize(n);
-		      std::iota(argsIdList.begin(),argsIdList.end(),0);
-		    }
-		  
-		  if(const auto af=
-		     actions.find((std::string)action);
-		     af==actions.end())
-		    errorEmitter("action \"",action,"\" not registered");
-		  else
-		    {
-		      Stack subNodes(argsIdList.size());
-		      for(size_t i=0;i<argsIdList.size();i++)
-			{
-			  const size_t iStack=stack.size()-n+argsIdList[i];
-			  subNodes[i]=stack[iStack];
-			  diagnostic(" passing as argument ",i," the stack symbol ",iStack,", of type ",variantInnerTypeName(*subNodes[i])," to stack\n");
-			}
-		      
-		      stack.erase(stack.end()-n,stack.end());
-		      if(auto p=af->second(subNodes))
-			{
-			  diagnostic(" pushing returned symbol, of type ",variantInnerTypeName(*p)," to stack\n");
-			  stack.push_back(p);
-			}
-		      else
-			diagnostic(" no returned symbol\n");
-		    }
+		    diagnostic(" no returned symbol\n");
 		}
 	      
 	      diagnostic(" new stack size: ",stack.size(),"\n");
@@ -4573,7 +4753,7 @@ namespace pp::internal
       return std::move(stack.front());
     }
   };
-  
+
   /////////////////////////////////////////////////////////////////
 }
 
