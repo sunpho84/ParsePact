@@ -2527,7 +2527,7 @@ namespace pp::internal
       StringMatcher actionMatcher{actionString};
       name=actionMatcher.matchId();
       if(name.empty())
-	errorEmitter("action string %s does not start with an id",actionString);
+	errorEmitter("action string \"",actionString,"\" does not start with an id");
       else
 	diagnostic("matched action: ",name,"\n");
       
@@ -3077,9 +3077,11 @@ namespace pp::internal
 		  
 		  symbols[iLhs].iProductions.push_back(productions.size());
 		  
-		  const size_t iAction=maybeAddToUniqueVector(actionStrings,actionString).second;
+		  std::optional<size_t> maybeIAction{};
+		  if(actionString.size())
+		    maybeIAction=maybeAddToUniqueVector(actionStrings,actionString).second;
 		  
-		  productions.emplace_back(iLhs,iRhss,iPrecedenceSymbol,iAction);
+		  productions.emplace_back(iLhs,iRhss,iPrecedenceSymbol,maybeIAction);
 		  
 		  diagnostic("ADDED production: \"",describe(productions.back()),"\"\n");
 		}
