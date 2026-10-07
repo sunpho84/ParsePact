@@ -193,38 +193,46 @@ namespace pp::internal
 	      size_t N>
   struct Array
   {
+    /// Stored elements
     T data[N];
     
+    /// Access an element without modifying it
     constexpr const T& operator[](const size_t& i) const
     {
       return data[i];
     }
     
+    /// Access an element for modification
     constexpr T& operator[](const size_t& i)
     {
       return data[i];
     }
     
+    /// Returns the beginning of the constant array
     constexpr const T* begin() const
     {
       return data;
     }
     
+    /// Returns the beginning of the array
     constexpr T* begin()
     {
       return data;
     }
     
+    /// Returns the end of the constant array
     constexpr const T* end() const
     {
       return data+N;
     }
     
+    /// Returns the end of the array
     constexpr T* end()
     {
       return data+N;
     }
     
+    /// Returns the number of elements
     constexpr const size_t size() const
     {
       return N;
@@ -304,6 +312,8 @@ namespace pp::internal
       return get(iEl);
     }
     
+    /// Merges a bitset of the same size, returning the number of differing bits
+    /// The count is taken before merging and includes bits set in either operand
     constexpr size_t insert(const BitSet& oth)
     {
       size_t r=0;
@@ -330,6 +340,7 @@ namespace pp::internal
     /// Number of rows
     size_t nRows;
     
+    /// Detects if the table has no rows
     constexpr bool isNull() const
     {
       return nRows==0;
@@ -481,6 +492,7 @@ namespace pp::internal
   ///////////////////////// Variants //////////////////////////////
   /////////////////////////////////////////////////////////////////
   
+  /// Returns the implementation-defined type name of the active alternative
   std::string variantInnerTypeName(const auto& v)
   {
     return std::visit([](const auto& x)
@@ -489,6 +501,7 @@ namespace pp::internal
     },v);
   }
   
+  /// Accesses the requested variant alternative, emitting an error if absent
   template <typename T,
 	    typename V>
   T& unvariant(V& v)
@@ -841,6 +854,7 @@ namespace pp::internal
     return c;
   }
   
+  /// Removes the surrounding quotes and decodes escaped characters
   inline std::string unescapeString(const std::string& in)
   {
     std::string out;
@@ -2511,22 +2525,36 @@ namespace pp::internal
     }
   };
   
+  /// Reference to a semantic value produced by one rhs symbol
   struct SubNodeId
   {
+    /// Zero-based position of the rhs symbol
     int pos;
   };
   
+  /// Literal string, literal integer, or reference passed to a grammar action
   using GrammarActionPar=
     std::variant<std::string_view,int,SubNodeId>;
   
+  /// Parses an action name and its optional argument list
+  /// Views on the name and string arguments borrow the action string
   struct GrammarAction
   {
+    /// Name used to find the action callback
     std::string_view name;
     
+    /// Whether the action receives every rhs semantic value in order
+    /// A bare action name selects this form; parentheses select explicit pars
     bool isVariadic;
     
+    /// Explicit callback arguments in call order, used when not variadic
     std::vector<GrammarActionPar> pars;
     
+    /// Parses an action annotation such as name, name(), or name($0,1,"text")
+    /// A bare name passes every rhs value to the callback; parentheses select
+    /// explicit arguments: $N passes rhs value N, an integer passes a number,
+    /// and a quoted string passes its contents. name() passes no arguments.
+    /// The action name and quoted-string views borrow actionString.
     constexpr GrammarAction(std::string_view actionString)
     {
       diagnostic("going to parse action string: ",actionString,"\n");
@@ -2620,6 +2648,7 @@ namespace pp::internal
       
       return out;
     }
+    /// Compares the production index and the position of the dot
     auto operator<=>(const GrammarItem&) const = default;
   };
   
@@ -2841,12 +2870,16 @@ namespace pp::internal
     /// Import the static polymorphism cast
     using StaticPolymorphic<T>::self;
     
+    /// Index of the synthetic start symbol
     size_t iStartSymbol{};
     
+    /// Index of the end-of-input symbol
     size_t iEndSymbol{};
     
+    /// Index of the error symbol
     size_t iErrorSymbol{};
     
+    /// Index of the symbol used for skipped whitespace
     size_t iWhitespaceSymbol{};
   };
   
@@ -2854,28 +2887,40 @@ namespace pp::internal
   struct Grammar :
     BaseGrammar<Grammar>
   {
+    /// Grammar name, borrowing the grammar definition
     std::string_view name;
     
+    /// Terminal, nonterminal, and synthetic symbols
     std::vector<GrammarSymbol> symbols;
     
+    /// Precedence level assigned by the latest associativity statement
     size_t currentPrecedence{};
     
+    /// Production rules, including the synthetic start production
     std::vector<GrammarProduction> productions;
     
+    /// Unique action strings, indexed by the productions
     std::vector<std::string_view> actionStrings;
     
+    /// Regexes matched as whitespace and discarded during parsing
     std::vector<std::string_view> whitespaceRegexList;
     
+    /// Production positions used to build the parser states
     std::vector<GrammarItem> items;
     
+    /// States of the parser machine
     std::vector<GrammarState> states;
     
+    /// Shift and reduce transitions grouped by state
     std::vector<std::vector<GrammarTransition>> transitionsOfStates;
     
+    /// Lookahead symbols and propagation targets for each item
     std::vector<Lookahead> lookaheads;
     
+    /// Matcher for terminal and whitespace regexes
     RegexMatcher regexMatcher;
     
+    /// Grammar symbol corresponding to each regex token
     std::vector<size_t> iSymbolOfRegex;
     
     /// Describes a production
@@ -2897,6 +2942,7 @@ namespace pp::internal
       return state.describe(items,productions,symbols,pref);
     }
     
+    /// Describes a state by its index
     constexpr inline std::string describeState(const size_t& iState,
 					       const std::string& pref="") const
     {
@@ -2910,6 +2956,7 @@ namespace pp::internal
       return transition.describe(items,productions,symbols,states,pref);
     }
     
+    /// Describes a transition of the given state
     constexpr inline std::string describeStateTransition(const size_t& iState,
 							 const size_t& iTransition,
 							 const std::string& pref="") const
@@ -2917,6 +2964,7 @@ namespace pp::internal
       return describe(transitionsOfStates[iState][iTransition],pref);
     }
     
+    /// Returns a reference to the given state
     constexpr inline const GrammarState& state(const size_t& iState) const
     {
       return states[iState];
@@ -2961,6 +3009,7 @@ namespace pp::internal
       return std::distance(symbols.begin(),(std::vector<GrammarSymbol>::iterator)s);
     }
     
+    /// Matches a grammar symbol and returns its index, inserting it if needed
     constexpr std::optional<size_t> matchAndParseSymbol(StringMatcher& m)
     {
       m.matchWhiteSpaceOrComments();
@@ -2977,6 +3026,7 @@ namespace pp::internal
       return std::nullopt;
     }
     
+    /// Parses an associativity statement and assigns its precedence level
     constexpr bool matchAndParseAssociativityStatement(StringMatcher& matchin)
     {
       /// Undo if not matching
@@ -3024,6 +3074,7 @@ namespace pp::internal
       return matchRes;
     }
     
+    /// Parses production alternatives, optional precedence, and action strings
     constexpr bool matchAndParseProductionStatement(StringMatcher& matchin)
     {
       auto matchRes=
@@ -3106,6 +3157,7 @@ namespace pp::internal
       return matchRes;
     }
     
+    /// Parses a whitespace declaration and collects its regexes
     constexpr bool matchAndParseWhitespaceStatement(StringMatcher& matchin)
     {
       /// Undo if not matching
@@ -3771,6 +3823,7 @@ namespace pp::internal
 	}
     }
     
+    /// Propagates lookahead symbols along the recorded item dependencies
     constexpr void propagateLookaheads()
     {
       // Propagates lookahead
@@ -3975,6 +4028,8 @@ namespace pp::internal
       regexMatcher=createRegexMatcher(regexes);
     }
     
+    /// Builds the parser tables and lexer from a grammar definition
+    /// The definition must outlive the grammar, which stores views into it
     constexpr Grammar(const std::string_view& str) :
       currentPrecedence(0)
     {
@@ -4068,8 +4123,10 @@ namespace pp::internal
     /// applied (if reduce)
     Stack2DVector<GrammarTransition,Specs.transitionsOfStatesPars> transitionsOfStatesData;
     
+    /// Matcher stored in fixed size tables
     RegexMatcherCt<Specs.regexMachinePars> regexMatcher;
     
+    /// Grammar symbol corresponding to each regex token
     Array<size_t,Specs.nRegexes> iSymbolOfRegex;
     
     static_assert(Specs.transitionsOfStatesPars.nRows==Specs.stateItemsPars.nRows,"number of rows for transitionsOfStates and stateItems do not match");
@@ -4271,6 +4328,7 @@ namespace pp::internal
       return state(iState).describe(pref);
     }
     
+    /// Describes a transition of the given state
     constexpr inline std::string describeStateTransition(const size_t& iState,
 							 const size_t& iTransition,
 							 const std::string& pref="") const
@@ -4387,48 +4445,64 @@ namespace pp::internal
     }
   };
   
+  /// Shifted token in a flattened parse tree
   struct ShiftNode
   {
+    /// Matched text, borrowing the input string
     std::string_view txt;
   };
   
+  /// Reduction in a flattened parse tree
   struct ReduceNode
   {
+    /// Optional index into the grammar action strings
     std::optional<size_t> iAction;
     
+    /// Number of rhs children consumed by the reduction
     size_t nSubNodes;
   };
   
+  /// Postorder parse-tree entry, representing a shift or a reduction
   using FlattenedParseTreeNode=
     std::variant<ShiftNode,ReduceNode>;
   
+  /// Temporary recursive node used while constructing the parse tree
   struct ParseTreeNode
   {
+    /// Matched text for a shift, or optional action index for a reduction
     std::variant<std::string_view,std::optional<size_t>> data;
     
+    /// Children in their original rhs order
     std::vector<ParseTreeNode> subNodes;
     
+    /// Detects whether the node holds a shifted token
     constexpr bool isShift() const
     {
       return std::get_if<std::string_view>(&data);
     }
     
+    /// Detects whether the node holds a reduction
     constexpr bool isReduce() const
     {
       return not isShift();
     }
     
+    /// Returns the matched text; the node must be a shift
     constexpr std::string_view getShiftString() const
     {
       return *std::get_if<std::string_view>(&data);
     }
     
+    /// Returns the optional action index; the node must be a reduction
     constexpr std::optional<size_t> getIAction() const
     {
       return *std::get_if<std::optional<size_t>>(&data);
     }
   };
   
+  /// Parses input and returns the tree in postorder, with children before parents
+  /// Returns a vector for null Specs, otherwise an array of Specs.nNodes entries
+  /// Shifted text borrows input, which must outlive the returned tree
   template <ParseTreeSpecs Specs=ParseTreeSpecs{},
     typename G>
     constexpr auto createParseTree(const G& grammar,
@@ -4615,6 +4689,7 @@ namespace pp::internal
     return ParseTreeSpecs{t};
   }
   
+  /// Creates a fixed size parse tree from grammar and input template arguments
   template <auto grammar,
 	    CtString input>
   constexpr auto createParseTree()
@@ -4627,34 +4702,49 @@ namespace pp::internal
   
   /////////////////////////////////////////////////////////////////
   
+  /// Executes flattened parse trees using user-provided grammar actions
+  /// T is the stack value type; ST wraps shifted strings, literal arguments,
+  /// and empty values before constructing T
   template <typename T,
 	    typename ST=T>
   struct ParseTreeExecutor
   {
+    /// Shared ownership of a semantic value
     using StackEl=
       std::shared_ptr<T>;
     
+    /// Semantic values in parsing order, or arguments passed to an action
     using Stack=
       std::vector<StackEl>;
     
+    /// Callback receiving action arguments and optionally returning a value
     using ActionFun=std::function<StackEl(Stack&)>;
     
+    /// Resolved callback and argument selection for a grammar action
     struct GrammarActionCallPars
     {
+      /// Action name, borrowing the required action string
       std::string_view name;
       
+      /// Explicit arguments, or no value when all rhs semantic values are passed
       std::optional<std::vector<GrammarActionPar>> pars;
       
+      /// Detects whether all rhs semantic values are passed to the callback
       bool isVariadic() const
       {
 	return not pars.has_value();
       }
       
+      /// User-provided callback for this action
       ActionFun fun;
     };
     
+    /// Resolved actions in the order used by reduction action indices
     std::vector<GrammarActionCallPars> actionsCallPars;
     
+    /// Matches required action strings to callbacks and parses their arguments
+    /// Missing callbacks and unused provided callbacks are errors
+    /// The required action strings must outlive this executor
     ParseTreeExecutor(const std::map<std::string,std::function<StackEl(Stack&)>>& providedActions,
 		      const std::vector<std::string_view>& requiredActions)
     {
@@ -4689,6 +4779,10 @@ namespace pp::internal
 	errorEmitter("provided unused actions:\n",unused);
     }
     
+    /// Evaluates shifts and reductions, returning the sole final stack value
+    /// An intermediate reduction without an action produces an empty ST value;
+    /// a final reduction without an action leaves the stack unchanged
+    /// Callbacks returning null do not push a replacement value
     StackEl execParseTree(const std::vector<FlattenedParseTreeNode>& pt) const
     {
       Stack stack;
@@ -4797,6 +4891,7 @@ namespace pp::internal
   /////////////////////////////////////////////////////////////////
 }
 
+/// Public aliases for regex matching, tokenization, grammar creation, and execution
 namespace pp
 {
   using pp::internal::RegexMatcher;
