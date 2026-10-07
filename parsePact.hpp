@@ -80,6 +80,10 @@ namespace pp::internal
   template <typename...Ts>
   Overload(Ts...) -> Overload<Ts...>;
   
+  /// Count the number of args of a variadic macro
+#define N_VARIADIC_ARGS(ARGS...)			\
+  {std::tuple_size_v<decltype(std::make_tuple(ARGS))>}
+  
   /////////////////////////////////////////////////////////////////
   //////// Basic helpful types to hold constexpr data /////////////
   /////////////////////////////////////////////////////////////////
@@ -1272,7 +1276,8 @@ namespace pp::internal
     }
     
     /// Matches a literal or regex, introduced and finished by delim, with no line break
-    constexpr std::string_view matchLiteralOrRegex(const char& delim)
+    constexpr std::string_view matchLiteralOrRegex(const char& delim,
+						   const bool acceptEmpty=false)
     {
       /// Undo if not matched
       auto res=
@@ -1297,7 +1302,7 @@ namespace pp::internal
 	    }
 	  while(escaped or c!=delim);
 	  
-	  if(beg.begin()+1==ref.begin()-1)
+	  if((beg.begin()+1==ref.begin()-1) and not acceptEmpty )
 	    errorEmitter("Empty literal or regex");
 	  
 	  res.accept();
@@ -1309,15 +1314,15 @@ namespace pp::internal
     }
     
     /// Matches a literal, introduced and finished by ', with no line break
-    constexpr std::string_view matchLiteral()
+    constexpr std::string_view matchLiteral(const bool acceptEmpty=false)
     {
-      return matchLiteralOrRegex('\'');
+      return matchLiteralOrRegex('\'',acceptEmpty);
     }
     
     /// Matches a regex, introduced and finished by ", with no line break
-    constexpr std::string_view matchRegex()
+    constexpr std::string_view matchRegex(const bool acceptEmpty=false)
     {
-      return matchLiteralOrRegex('"');
+      return matchLiteralOrRegex('"',acceptEmpty);
     }
     
     /// Matches an identifier: [_a-zA-Z][a-zA-Z0-9]*
@@ -2518,7 +2523,9 @@ namespace pp::internal
   {
     std::string_view name;
     
-    std::vector<GrammarActionPar> actArgs;
+    bool isVariadic;
+    
+    std::vector<GrammarActionPar> pars;
     
     constexpr GrammarAction(std::string_view actionString)
     {
@@ -2533,6 +2540,8 @@ namespace pp::internal
       
       if(actionMatcher.matchChar('('))
 	{
+	  isVariadic=false;
+	  
 	  bool matchedSomething{};
 	  bool matchedEnd{};
 	  while((not actionMatcher.ref.empty()) and
@@ -2545,8 +2554,8 @@ namespace pp::internal
 		  diagnostic("found begin of subnode reference\n");
 		  if(std::optional<int> id=actionMatcher.matchInt())
 		    {
-		      diagnostic("argument n.",actArgs.size()," of the action is a reference to subnode[",*id,"]\n");
-		      actArgs.emplace_back(SubNodeId{*id});
+		      diagnostic("argument n.",pars.size()," of the action is a reference to subnode[",*id,"]\n");
+		      pars.emplace_back(SubNodeId{*id});
 		    }
 		  else
 		    errorEmitter("in action string \"",actionMatcher.ref.begin(),"\" not matched the subnode id");
@@ -2554,14 +2563,14 @@ namespace pp::internal
 	      else
 		if(std::optional<int> id=actionMatcher.matchInt())
 		  {
-		    diagnostic("argument \"",actArgs.size(),"\" of the action is the number",*id);
-		    actArgs.emplace_back(GrammarActionPar{*id});
+		    diagnostic("argument \"",pars.size(),"\" of the action is the number",*id);
+		    pars.emplace_back(GrammarActionPar{*id});
 		  }
 		else
-		  if(std::string_view s=actionMatcher.matchRegex();not s.empty())
+		  if(std::string_view s=actionMatcher.matchRegex(true);s.data())
 		    {
-		      diagnostic("argument ",actArgs.size()," of the action is the string",s);
-		      actArgs.emplace_back(GrammarActionPar{s});
+		      diagnostic("argument ",pars.size()," of the action is the string",s);
+		      pars.emplace_back(GrammarActionPar{s});
 		    }
 		  else
 		    errorEmitter("in action string ",actionMatcher.ref.begin()," not matched a possible arg");
@@ -2569,6 +2578,8 @@ namespace pp::internal
 	      matchedSomething=true;
 	    }
 	}
+      else
+	isVariadic=true;
     }
   };
   
@@ -3998,7 +4009,7 @@ namespace pp::internal
 					if(not x)
 					  x=0;
 					
-					return *x+a.actArgs.size();
+					return *x+a.pars.size();
 				      }),
 	   .nRows=actionStrings.size()},
 	 .productionPars{.nEntries=reduce(productions,
@@ -4328,7 +4339,7 @@ namespace pp::internal
 	  actions.emplace_back(oth.actionStrings[iAction]);
 	  actionsName[iAction]=actions[iAction].name;
 	}
-      actionsData.fillWith([&actions](const size_t& iAction)->const std::vector<GrammarActionPar>&{return actions[iAction].actArgs;});
+      actionsData.fillWith([&actions](const size_t& iAction)->const std::vector<GrammarActionPar>&{return actions[iAction].pars;});
       
       regexMatcher=oth.regexMatcher;
     }
@@ -4632,12 +4643,17 @@ namespace pp::internal
     {
       std::string_view name;
       
-      std::vector<GrammarActionPar> args;
+      std::optional<std::vector<GrammarActionPar>> pars;
       
-      ActionFun f;
+      bool isVariadic() const
+      {
+	return not pars.has_value();
+      }
+      
+      ActionFun fun;
     };
     
-    std::vector<GrammarActionCallPars> actions;
+    std::vector<GrammarActionCallPars> actionsCallPars;
     
     ParseTreeExecutor(const std::map<std::string,std::function<StackEl(Stack&)>>& providedActions,
 		      const std::vector<std::string_view>& requiredActions)
@@ -4654,15 +4670,18 @@ namespace pp::internal
 	  
 	  if(auto f=providedActions.find((std::string)ga.name);f!=providedActions.end())
 	    {
-	      actions.emplace_back(ga.name,ga.actArgs,f->second);
-	      used.emplace(s);
+	      if(ga.isVariadic)
+		actionsCallPars.emplace_back(ga.name,std::nullopt,f->second);
+	      else
+		actionsCallPars.emplace_back(ga.name,ga.pars,f->second);
+	      used.emplace(ga.name);
 	    }
 	  else
 	    errorEmitter("required action: \"",ga.name,"\" not found");
 	}
       
       std::string unused;
-      for(const std::string_view& s : requiredActions)
+      for(const auto& [s,f] : providedActions)
 	if(used.find((std::string)s)==used.end())
 	  unused+="   "+(std::string)s+"\n";
       
@@ -4680,7 +4699,7 @@ namespace pp::internal
 	    {
 	      const std::string_view s=sn->txt;
 	      diagnostic("Push string: ",s,"\n");
-	      stack.push_back(std::make_shared<T>((ST)std::string(s)));
+	      stack.push_back(std::make_shared<T>(ST{std::string(s)}));
 	    }
 	  else
 	    {
@@ -4701,38 +4720,57 @@ namespace pp::internal
 		  else
 		    {
 		      stack.erase(stack.end()-n,stack.end());
-		      stack.push_back(std::make_shared<T>(ST(std::monostate{})));
+		      stack.push_back(std::make_shared<T>(ST{std::monostate{}}));
 		    }
 		}
 	      else
 		{
-		  const auto& [name,pars,fun]=actions[*rn.iAction];
+		  const GrammarActionCallPars& acp=actionsCallPars[*rn.iAction];
+		  const std::string_view& name=acp.name;
 		  
 		  diagnostic(" with action: \"",name,"\"\n");
 		  
-		  const size_t nSubNodes=pars.size();
-		  Stack subNodes(nSubNodes);
-		  for(size_t iArg=0;iArg<nSubNodes;iArg++)
+		  Stack subNodes;
+		  
+		  if(acp.isVariadic())
 		    {
-		      subNodes[iArg]=
-			std::visit(Overload{[&stack,
-					     &n](const SubNodeId& si)->StackEl
+		      diagnostic("Action is variadic, taking ",n," symbols\n");
+		      subNodes.resize(n);
+		      for(size_t i=0;i<n;i++)
+			subNodes[i]=stack[stack.size()-n+i];
+		    }
+		  else
+		    {
+		      const std::vector<GrammarActionPar>& pars=*acp.pars;
+		      
+		      const size_t nSubNodes=pars.size();
+		      subNodes.resize(nSubNodes);
+		      
+		      for(size_t iArg=0;iArg<nSubNodes;iArg++)
 			{
-			  return stack[stack.size()-n+si.pos];
-			},
-			      [](const std::string_view& st)->StackEl
-			      {
-				return std::make_shared<T>((ST)(std::string)st);
-			      },
-			      [](const auto& any)->StackEl
-			      {
-				return std::make_shared<T>((ST)any);
-			      }}
-			,pars[iArg]);
-		    };
+			  subNodes[iArg]=
+			    std::visit(Overload{[&stack,
+						 &n](const SubNodeId& si)->StackEl
+			    {
+			      if(si.pos>=n)
+				errorEmitter("Trying to pass arg $",si.pos," beyond max arg ",n);
+			      
+			      return stack[stack.size()-n+si.pos];
+			    },
+				  [](const std::string_view& st)->StackEl
+				  {
+				    return std::make_shared<T>(ST{(std::string)st});
+				  },
+				  [](const auto& any)->StackEl
+				  {
+				    return std::make_shared<T>(ST{any});
+				  }}
+			      ,pars[iArg]);
+			};
+		    }
 		  
 		  stack.erase(stack.end()-n,stack.end());
-		  if(auto p=fun(subNodes))
+		  if(auto p=acp.fun(subNodes))
 		    {
 		      diagnostic(" pushing returned symbol, of type ",variantInnerTypeName(*p)," to stack\n");
 		      stack.push_back(p);

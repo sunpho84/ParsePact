@@ -30,49 +30,6 @@ double time_diff_with_now(const Time& start)
 #define N_VARIADIC_ARGS(ARGS...)			\
   {std::tuple_size_v<decltype(std::make_tuple(ARGS))>}
 
-template <typename T,
-	  typename V>
-T& unvariant(V& v)
-{
-  T* u=std::get_if<T>(&v);
-  if(u==nullptr)
-    errorEmitter("expecting ",typeid(T).name(),", obtained other type");
-  
-  return *u;
-}
-
-std::string unescapeString(const std::string& in)
-{
-  std::string out;
-  
-  bool esc=false;
-  
-  for(size_t i=1;i<in.length()-1;i++)
-    if(esc)
-      {
-	switch(in[i])
-	  {
-	  case 'b':out+='\b';break;
-	  case 'n':out+='\n';break;
-	  case 'f':out+='\f';break;
-	  case 'r':out+='\r';break;
-	  case 't':out+='\t';break;
-	  default:out+=in[i];
-	  }
-	esc=false;
-      }
-    else
-      if(in[i]=='\\')
-	esc=true;
-      else
-	out+=in[i];
-  
-  if(esc)
-    errorEmitter("String ended while escaping");
-  
-  return out;
-}
-
 template <typename...Ts>
 struct Overload :
   Ts...
@@ -139,6 +96,24 @@ concept Streamable=
 requires(Op op)
 {
   std::cout<<op;
+};
+
+/////////////////////////////////////////////////////////////////
+
+template <typename T>
+struct Wrap
+{
+  T value;
+  
+  operator T&()
+  {
+    return value;
+  }
+  
+  operator const T&() const
+  {
+    return value;
+  }
 };
 
 /////////////////////////////////////////////////////////////////
@@ -303,8 +278,10 @@ struct HostFunction;
 
 struct ValuesList;
 
+struct ValuePtr;
+
 using Value=
-  std::variant<std::monostate,std::string,int,double,Function,HostFunction,ValuesList>;
+  std::variant<std::monostate,std::string,int,double,Function,HostFunction,ValuesList,ValuePtr>;
 
 struct ValuesList
 {
@@ -313,6 +290,10 @@ struct ValuesList
   Value& operator[](const int& i);
 };
 
+struct ValuePtr
+{
+ Value* ptr;
+};
 
 struct Function
 {
@@ -529,8 +510,6 @@ struct Environment
   {
   }
 };
-
-std::map<std::string,Function> functionsTable;
 
 struct Evaluator
 {
@@ -937,11 +916,11 @@ void c()
     "             | forStatement [return]"
     "             | ifStatement [return]"
     "             | functionDefinition [return]"
-    "             | \"return\" expression_statement [funcReturn(1)]"
+    "             | \"return\" expression_statement [funcReturn($1)]"
     "             ;"
-    "   functionDefinition : \"fun\" identifier \"\\(\" expressionList \"\\)\" compound_statement [funcDef(1,3,5)]"
+    "   functionDefinition : \"fun\" identifier \"\\(\" expressionList \"\\)\" compound_statement [funcDef($1,$3,$5)]"
     "                      ;"
-    "   forStatement: \"for\" \"\\(\" forInit \";\" forCheck \";\" forIncr \"\\)\" statement [forStatement(2,4,6,8)]"
+    "   forStatement: \"for\" \"\\(\" forInit \";\" forCheck \";\" forIncr \"\\)\" statement [forStatement($2,$4,$6,$8)]"
     "               ;"
     "   forInit: expression [return]"
     "          |"
@@ -952,74 +931,74 @@ void c()
     "   forIncr: expression [return]"
     "          |"
     "          ;"
-    "   ifStatement: \"if\" \"\\(\" expression \"\\)\" statement %precedence lowerThanElse [ifStatement(2,4)]"
-    "              | \"if\" \"\\(\" expression \"\\)\" statement \"else\" statement [ifElseStatement(2,4,6)]"
+    "   ifStatement: \"if\" \"\\(\" expression \"\\)\" statement %precedence lowerThanElse [ifStatement($2,$4)]"
+    "              | \"if\" \"\\(\" expression \"\\)\" statement \"else\" statement [ifElseStatement($2,$4,$6)]"
     "              ;"
-    "    compound_statement : \"{\" statements \"}\" [return(1)]"
+    "    compound_statement : \"{\" statements \"}\" [return($1)]"
     "                       ;"
     "    statements : [createStatements]"
     "               | statements statement [appendStatement]"
     "               ;"
-    "    expression_statement : expression \";\" [return(0)]"
+    "    expression_statement : expression \";\" [return($0)]"
     "                         ;"
-    "    expression : postfix_expression %precedence \"\\+\\+\" [return(0)]"
-    "               | expression \"\\+\" expression [binarySum(0,2)]"
-    "               | expression \"\\-\" expression [binaryDiff(0,2)]"
-    "               | expression \"\\*\" expression [binaryProd(0,2)]"
-    "               | expression \"/\" expression [binaryDiv(0,2)]"
-    "               | expression \"%\" expression [binaryMod(0,2)]"
-    "               | \"\\+\" expression %precedence UNARY_ARITHMETIC [unaryPlus(1)]"
-    "               | \"\\-\" expression %precedence UNARY_ARITHMETIC [unaryMinus(1)]"
+    "    expression : postfix_expression %precedence \"\\+\\+\" [return($0)]"
+    "               | expression \"\\+\" expression [binarySum($0,$2)]"
+    "               | expression \"\\-\" expression [binaryDiff($0,$2)]"
+    "               | expression \"\\*\" expression [binaryProd($0,$2)]"
+    "               | expression \"/\" expression [binaryDiv($0,$2)]"
+    "               | expression \"%\" expression [binaryMod($0,$2)]"
+    "               | \"\\+\" expression %precedence UNARY_ARITHMETIC [unaryPlus($1)]"
+    "               | \"\\-\" expression %precedence UNARY_ARITHMETIC [unaryMinus($1)]"
     "               | unary_reference [return]"
-    "               | \"!\" expression [unaryNot(1)]"
-    "               | expression \"<\" expression [binarySmaller(0,2)]"
-    "               | expression \">\" expression [binaryGreater(0,2)]"
-    "               | expression \"<=\" expression [binarySmallerEqual(0,2)]"
-    "               | expression \">=\" expression [binaryGreaterEqual(0,2)]"
-    "               | expression \"==\" expression [binaryCompare(0,2)]"
-    "               | expression \"!=\" expression [binaryInequal(0,2)]"
-    "               | expression \"&&|and\" expression [binaryAnd(0,2)]"
-    "               | expression \"\\|\\||or\" expression [binaryOr(0,2)]"
+    "               | \"!\" expression [unaryNot($1)]"
+    "               | expression \"<\" expression [binarySmaller($0,$2)]"
+    "               | expression \">\" expression [binaryGreater($0,$2)]"
+    "               | expression \"<=\" expression [binarySmallerEqual($0,$2)]"
+    "               | expression \">=\" expression [binaryGreaterEqual($0,$2)]"
+    "               | expression \"==\" expression [binaryCompare($0,$2)]"
+    "               | expression \"!=\" expression [binaryInequal($0,$2)]"
+    "               | expression \"&&|and\" expression [binaryAnd($0,$2)]"
+    "               | expression \"\\|\\||or\" expression [binaryOr($0,$2)]"
     "               | assign_expression [return]"
-    "               | identifier \"\\*=\" expression [unaryProdAssign]"
-    "               | identifier \"/=\" expression [unaryDivAssign]"
-    "               | identifier \"\\+=\" expression [unarySumAssign]"
-    "               | identifier \"\\-=\" expression [unaryDiffAssign]"
+    "               | identifier \"\\*=\" expression [unaryProdAssign($0,$2)]"
+    "               | identifier \"/=\" expression [unaryDivAssign($0,$2)]"
+    "               | identifier \"\\+=\" expression [unarySumAssign($0,$2)]"
+    "               | identifier \"\\-=\" expression [unaryDiffAssign($0,$2)]"
     "               ;"
-    "    postfix_expression : primary_expression [return(0)]"
-    "                       | postfix_expression \"\\+\\+\" [unaryPostfixIncrement(0)]"
-    "                       | postfix_expression \"\\-\\-\" [unaryPostfixDecrement(0)]"
-    // "                       | postfix_expression \"\\(\" \"\\)\" %precedence FUNCTION_CALL [emptyFuncCall(0)] "
-    "                       | postfix_expression \"\\(\" funcArgsList \"\\)\" %precedence FUNCTION_CALL [funcCall(0,2)] "
-    "                       | postfix_expression \"\\[\" expression \"\\]\" [subscribe(0,2)] "
+    "    postfix_expression : primary_expression [return($0)]"
+    "                       | postfix_expression \"\\+\\+\" [unaryPostfixIncrement($0)]"
+    "                       | postfix_expression \"\\-\\-\" [unaryPostfixDecrement($0)]"
+    // "                       | postfix_expression \"\\(\" \"\\)\" %precedence FUNCTION_CALL [emptyFuncCall($0)] "
+    "                       | postfix_expression \"\\(\" funcArgsList \"\\)\" %precedence FUNCTION_CALL [funcCall($0,$2)] "
+    "                       | postfix_expression \"\\[\" expression \"\\]\" [subscribe($0,$2)] "
     "                       ;"
     "    funcArgsList : expressionList [return]"
     "                 | namedArgList [return]"
-    "                 | expressionList \",\" namedArgList [immediateSum(0,2)]"
+    "                 | nonEmptyExpressionList \",\" namedArgList [immediateSum($0,$2)]"
     "                 ;"
     "    namedArgList : namedArg [firstExprOfList]"
-    "                 | namedArgList \",\" namedArg [appendStatement(0,2)]"
+    "                 | namedArgList \",\" namedArg [appendStatement($0,$2)]"
     "                 ;"
-    "    namedArg : \"\\.\" identifier \"=\" expression [namedArg(1,3)]"
+    "    namedArg : \"\\.\" identifier \"=\" expression [namedArg($1,$3)]"
     "             ;"
     "    primary_expression : identifier [return]"
     "                       | \"[0-9]+\" [convToInt]"
     "                       | \"([0-9]+(\\.[0-9]*)?|(\\.[0-9]+))((e|E)(\\+|\\-)?[0-9]+)?\" [convToFloat]"
     "                       | \"\\\"[^\\\"]*\\\"\" [convToStr]"
-    "                       | \"\\(\" expression \"\\)\" %precedence BRACKETS [return(1)]"
+    "                       | \"\\(\" expression \"\\)\" %precedence BRACKETS [return($1)]"
     "                       ;"
-    "    assign_expression : postfix_expression \"=\" expression %precedence \"=\" [unaryAssign(0,2)]"
+    "    assign_expression : postfix_expression \"=\" expression %precedence \"=\" [unaryAssign($0,$2)]"
     "                      ;"
     // "    lhs : identifier [getPtrOfId]"
-    // "        | lhs \"[\" expression \"]\" [subscribe(0,2)]"
+    // "        | lhs \"[\" expression \"]\" [subscribe($0,$2)]"
     // "        ;"
-    "    unary_reference : \"&\" expression [unaryReference(1)]"
+    "    unary_reference : \"&\" expression [unaryReference($1)]"
     "                    ;"
     "    expressionList : [createStatements]"
     "                   | nonEmptyExpressionList %precedence \",\" [return]"
     "                   ;"
     "    nonEmptyExpressionList : expression [firstExprOfList]"
-    "                           | nonEmptyExpressionList \",\" expression [appendStatement(0,2)]"
+    "                           | nonEmptyExpressionList \",\" expression [appendStatement($0,$2)]"
     "                           ;"
     "    identifier : \"[a-zA-Z_][a-zA-Z0-9_]*\" [convToId]"
     "               ;"
@@ -1090,7 +1069,7 @@ void c()
   // createParsableExample(c);
   // return ;
   
-  ParseTreeExecutor<ASTNode,ValueNode> ptExecutor;
+  std::map<std::string,ParseTreeExecutor<ASTNode,ValueNode>::ActionFun> providedActions;
   
 #define ENSURE_N_SYMBOLS(N)			\
   if(subNodes.size()!=N)			\
@@ -1099,7 +1078,7 @@ void c()
 #define PROVIDE_ACTION_WITH_N_SYMBOLS(NAME,				\
 				      N,				\
 				      BODY...)				\
-  ptExecutor.actions[NAME]=						\
+  providedActions[NAME]=						\
     [](std::vector<std::shared_ptr<ASTNode>>& subNodes) -> std::shared_ptr<ASTNode> \
     {									\
       ENSURE_N_SYMBOLS(N);						\
@@ -1152,6 +1131,15 @@ void c()
 #undef PROVIDE_BIN_ACTION
   
   PROVIDE_ACTION_WITH_N_SYMBOLS("unaryAssign",2,return std::make_shared<ASTNode>(AssignNode{.lhs=subNodes[0],.rhs=subNodes[1]}));
+  PROVIDE_ACTION_WITH_N_SYMBOLS("unaryProdAssign",2,return std::make_shared<ASTNode>(AssignNode{.lhs=subNodes[0],.rhs=std::make_shared<ASTNode>(ProdNode{.op1=subNodes[0],.op2=subNodes[1]})}));
+  PROVIDE_ACTION_WITH_N_SYMBOLS("unaryDivAssign",2,return std::make_shared<ASTNode>(AssignNode{.lhs=subNodes[0],.rhs=std::make_shared<ASTNode>(DivNode{.op1=subNodes[0],.op2=subNodes[1]})}));
+  PROVIDE_ACTION_WITH_N_SYMBOLS("unarySumAssign",2,return std::make_shared<ASTNode>(AssignNode{.lhs=subNodes[0],.rhs=std::make_shared<ASTNode>(SumNode{.op1=subNodes[0],.op2=subNodes[1]})}));
+  PROVIDE_ACTION_WITH_N_SYMBOLS("unaryDiffAssign",2,return std::make_shared<ASTNode>(AssignNode{.lhs=subNodes[0],.rhs=std::make_shared<ASTNode>(DiffNode{.op1=subNodes[0],.op2=subNodes[1]})}));
+  PROVIDE_ACTION_WITH_N_SYMBOLS("immediateSum",2,
+				const auto& rhs=fetch<ASTNodesNode>(subNodes,1).subNodes;
+				auto& lhs=fetch<ASTNodesNode>(subNodes,0).subNodes;
+				lhs.insert(lhs.end(),rhs.begin(),rhs.end());
+				return subNodes[0]);
   PROVIDE_ACTION_WITH_N_SYMBOLS("firstExprOfList",1,return std::make_shared<ASTNode>(ASTNodesNode{.subNodes{subNodes[0]}}));
   PROVIDE_ACTION_WITH_N_SYMBOLS("namedArg",2,return std::make_shared<ASTNode>(NamedArgNode{.name=fetch<IdNode>(subNodes,0).name,.expr=subNodes[1]}));
   PROVIDE_ACTION_WITH_N_SYMBOLS("funcCall",2,return std::make_shared<ASTNode>(FuncCallNode{.getFun=subNodes[0],.args=fetch<ASTNodesNode>(subNodes,1).subNodes}));
@@ -1164,15 +1152,13 @@ void c()
   PROVIDE_ACTION_WITH_N_SYMBOLS("forStatement",4,return std::make_shared<ASTNode>(ForNode{.subNodes{subNodes}}));
   PROVIDE_ACTION_WITH_N_SYMBOLS("funcDef",3,
 				const std::string name=fetch<IdNode>(subNodes,0).name;
-				if(auto it=functionsTable.find(name);it!=functionsTable.end())
-				  functionsTable.erase(it);
 				
 				std::shared_ptr<ASTNode> body=std::make_shared<ASTNode>(std::move(fetch<ASTNodesNode>(subNodes,2)));
 				
 				std::shared_ptr<FunctionArgs> args=std::make_shared<FunctionArgs>();
 				
 				for(std::shared_ptr<ASTNode>& a : fetch<ASTNodesNode>(subNodes,1).subNodes)
-				  std::visit(Overload{
+				  std::visit(::Overload{
 				      [&args](const IdNode& ass)
 				      {
 					args->emplace_back(ass.name,false,nullptr);
@@ -1199,8 +1185,10 @@ void c()
   
   /////////////////////////////////////////////////////////////////
   
+  ParseTreeExecutor<ASTNode,ValueNode> ptExecutor(providedActions,c.actionStrings);
+  
   std::vector<char> ext;
-  if(const char* path="/home/francesco/trastulli/parse-pact/example";
+  if(const char* path="example";
      std::filesystem::exists(path))
     {
       const size_t exs=
