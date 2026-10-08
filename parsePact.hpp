@@ -123,6 +123,7 @@ namespace pp::internal
       constexpr size_t N=
 	S.second-S.first+1;
       
+      /// Resulting string with a terminating null character
       CtString<N> res{};
       
       for(size_t i=0;i<N-1;i++)
@@ -298,9 +299,13 @@ namespace pp::internal
     /// Access a given bit
     constexpr bool get(const size_t& iEl) const
     {
+      /// Index of the byte containing the requested bit
       const size_t i=iEl/8;
+      /// Position of the bit within that byte
       const char j=iEl%8;
+      /// Byte containing the requested bit
       const char& f=data[i];
+      /// Mask selecting the requested bit
       const char mask=char(1)<<j;
       
       return f&mask;
@@ -707,6 +712,7 @@ namespace pp::internal
 	}
       
       // Add from last range to the end
+      // Largest representable char, used as the exclusive range limit
       if(const char m=std::numeric_limits<char>::max();prevEnd<m)
 	negatedRanges.push_back({prevEnd,m});
       
@@ -768,6 +774,7 @@ namespace pp::internal
 	{
 	  if(cur->first>b)
 	    {
+	      /// Previous beginning, retained for the diagnostic
 	      const char prev=cur->first;
 	      cur->first=std::min(cur->first,b);
 	      diagnostic("range ",i," ",rangeDescribe(prev,cur->second)," extended left to ",rangeDescribe(*cur),"\n");
@@ -775,6 +782,7 @@ namespace pp::internal
 	  
 	  if(cur->second<e)
 	    {
+	      /// Previous end, retained for the diagnostic
 	      const char prev=cur->second;
 	      cur->second=e;
 	      diagnostic("range ",i," ",rangeDescribe(cur->first,prev)," extended right to ",rangeDescribe(*cur),"\n");
@@ -1093,6 +1101,7 @@ namespace pp::internal
     {
       diagnostic("trying to match char '",c,"'\n");
       
+      /// Whether the next input character matches the requested character
       const bool accepting=
 	(not ref.empty()) and ref.starts_with(c);
       
@@ -1184,6 +1193,7 @@ namespace pp::internal
 	  
 	  if(pos!=filt.npos)
 	    {
+	      /// Character selected from the filter at the matching position
 	      const char c=
 		filt[pos];
 	      
@@ -1202,8 +1212,12 @@ namespace pp::internal
     /// Matches an int
     constexpr std::optional<int> matchInt()
     {
+      /// Integer accumulated from the matched digits
       int iN{};
+      
+      /// Whether at least one digit was consumed
       bool matched{};
+      
       while(char r=matchAnyCharIn("0123456789"))
 	{
 	  iN=iN*10+(r-'0');
@@ -1294,6 +1308,7 @@ namespace pp::internal
 						   const bool acceptEmpty=false)
     {
       /// Undo if not matched
+      /// Temporary matcher state, rewound if the literal or regex does not match
       auto res=
 	beginTemptativeMatch("matchLiteralOrRegex",false);
       
@@ -1342,6 +1357,7 @@ namespace pp::internal
     /// Matches an identifier: [_a-zA-Z][a-zA-Z0-9]*
     constexpr std::string_view matchId()
     {
+      /// Tentative match state, accepted only after a complete identifier is read
       auto matchRes=
 	this->beginTemptativeMatch("matchId",false);
       
@@ -1487,6 +1503,7 @@ namespace pp::internal
     /// Sets the id of all the nodes
     constexpr size_t setAllIds()
     {
+      /// Next id assigned while traversing the regex parse tree
       size_t iD=0;
       
       setRecursivelyId(iD);
@@ -1852,6 +1869,7 @@ namespace pp::internal
       
       using enum RegexParseTreeNode::Type;
       
+      /// Combined alternation of all regex parse trees
       std::optional<RegexParseTreeNode> res;
       
       for(size_t iRegex=0;iRegex<regexes.size();iRegex++)
@@ -1969,6 +1987,7 @@ namespace pp::internal
 	  
 	  diagnostic("trying to match char: \'",c,"\'\n");
 	  
+	  /// First transition leaving the current state
 	  auto trans=self().transitions.begin()+self().dStates[dState].transitionsBegin;
 	  diagnostic("First transition: ",self().dStates[dState].transitionsBegin,"\n");
 	  while(trans!=self().transitions.end() and trans->iDStateFrom==dState and not((trans->beg<=c and trans->end>c)))
@@ -2169,6 +2188,7 @@ namespace pp::internal
       dStates.resize(dStateLabels.size(),RegexMatcherDState{.accepting=false,.iToken=0});
       
       // Count the number of transitions per dState
+      // Number of transitions leaving each deterministic state
       std::vector<size_t> nTransitionsPerDState(dStates.size());
       for(const auto& [iDState,b,e,iNext] : transitions)
 	nTransitionsPerDState[iDState]++;
@@ -2516,6 +2536,7 @@ namespace pp::internal
     constexpr inline bool isNullableAfter(const std::vector<GrammarSymbol>& symbols,
 					  size_t position) const
     {
+      /// Whether every symbol from position onward is nullable
       bool res=true;
       
       while(res and position<iRhsList.size())
@@ -2559,6 +2580,7 @@ namespace pp::internal
     {
       diagnostic("going to parse action string: ",actionString,"\n");
       
+      /// Matcher used to parse the action name and explicit arguments
       StringMatcher actionMatcher{actionString};
       name=actionMatcher.matchId();
       if(name.empty())
@@ -2690,6 +2712,7 @@ namespace pp::internal
 	    {
 	      const size_t& iNextSymbol=productions[item.iProduction].iRhsList[item.position];
 	      
+	      /// Adds a production position to the shared item list and goto state
 	      auto add=
 		[&gotoState,
 		 &items](const size_t iProduction,
@@ -3077,6 +3100,7 @@ namespace pp::internal
     /// Parses production alternatives, optional precedence, and action strings
     constexpr bool matchAndParseProductionStatement(StringMatcher& matchin)
     {
+      /// Tentative match state for this production statement
       auto matchRes=
 	matchin.beginTemptativeMatch("productionStatement",false);
       
@@ -3125,6 +3149,7 @@ namespace pp::internal
 		  std::string_view actionString{};
 		  if(matchin.matchChar('['))
 		    {
+		      /// Beginning of the action text inside the brackets
 		      auto beg=matchin.ref.begin();
 		      while(const char c=matchin.matchPossiblyEscapedCharNotIn("]"))
 			diagnostic("including char '",c,"' in the action");
@@ -3161,6 +3186,7 @@ namespace pp::internal
     constexpr bool matchAndParseWhitespaceStatement(StringMatcher& matchin)
     {
       /// Undo if not matching
+      /// Tentative match state for the whitespace declaration
       auto matchRes=
 	matchin.beginTemptativeMatch("whitespace statement",false);
       
@@ -3175,6 +3201,7 @@ namespace pp::internal
 	  bool goon=true;;
 	  while(goon)
 	    {
+	      /// Next whitespace regex in the declaration, if present
 	      auto l=matchin.matchRegex();
 	      if(not l.empty())
 		{
@@ -3374,8 +3401,10 @@ namespace pp::internal
     /// Replaces a non-terminal symbols that is actually named terminals
     constexpr bool removeOneRedundantProductionIfFound()
     {
+      /// Whether an alias production was removed during this pass
       bool removed=false;
       
+      /// Next grammar symbol checked for a redundant production
       size_t iSymbol=0;
       while(iSymbol<symbols.size() and not removed)
 	{
@@ -3407,6 +3436,7 @@ namespace pp::internal
     /// Performs grammar optimization
     constexpr void grammarOptimize()
     {
+      /// Prints the grammar summary around an optimization pass
       const auto diag=
 	[this](const char* tag)
 	{
@@ -3423,6 +3453,7 @@ namespace pp::internal
       
       diag("before");
       
+      /// Whether the previous pass removed a redundant production
       bool doneSomething;
       do
 	{
@@ -3456,6 +3487,7 @@ namespace pp::internal
 		    const GrammarProduction& p=productions[iP];
 		    diagnostic("  Processing production ",iP,", lhs: ",symbols[p.iLhs()].name," before added: ",nAdded,", rhs size: ",p.iRhsList.size(),"\n");
 		    
+		    /// Whether the rhs prefix contains a non-nullable symbol
 		    bool nonNullableFound=false;
 		    for(size_t iRhs=0;iRhs<p.iRhsList.size() and not nonNullableFound;iRhs++)
 		      {
@@ -3468,6 +3500,7 @@ namespace pp::internal
 			  {
 			    diagnostic("   ",symbols[iF].name,"\n");
 			    
+			    /// Whether this first-set entry was newly inserted
 			    const bool isAdded=maybeAddToUniqueVector(s.firsts,iF).first;
 			    nAdded+=isAdded;
 			    
@@ -3575,6 +3608,7 @@ namespace pp::internal
 	  diagnostic("Production \"",describe(p),"\"\n");
 	  for(size_t iiRhs=p.iRhsList.size()-1;iiRhs<p.iRhsList.size() and not p.precedenceSymbol;iiRhs--)
 	    {
+	      /// Symbol being checked while finding the production precedence
 	      const size_t iRhs=p.iRhsList[iiRhs];
 	      diagnostic(" probing symbol ",iRhs," (\"",symbols[iRhs].name,"\"), type: ",(int)symbols[iRhs].type,"\n");
 	      if(symbols[iRhs].type==GrammarSymbol::Type::TERMINAL_SYMBOL)
@@ -3655,6 +3689,7 @@ namespace pp::internal
       
       items.emplace_back(symbols[iStartSymbol].iProductions.front(),0);
       
+      /// Index of the initial parser state
       const size_t iStartState=0;
       states[iStartState].addClosure(items,productions,symbols);
       
@@ -3729,6 +3764,7 @@ namespace pp::internal
 		std::vector<size_t> toIns;
 		for(size_t nonNullable=0,iOtherPosition=item.position+1;iOtherPosition<production.iRhsList.size() and nonNullable==0;iOtherPosition++)
 		  {
+		    /// Next rhs symbol whose first set may enter this lookahead
 		    const size_t iOtherSymbol=production.iRhsList[iOtherPosition];
 		    const GrammarSymbol& otherSymbol=symbols[iOtherSymbol];
 		    
@@ -3828,6 +3864,7 @@ namespace pp::internal
     {
       // Propagates lookahead
       diagnostic("-----------------------------------\n");
+      /// Items whose lookahead sets must be propagated in the next pass
       std::vector<size_t> iLookaheadsToInsert(lookaheads.size());
       std::iota(iLookaheadsToInsert.begin(),iLookaheadsToInsert.end(),0);
       for(std::vector<size_t> nextLookaheads;not iLookaheadsToInsert.empty();iLookaheadsToInsert.swap(nextLookaheads))
@@ -3840,6 +3877,7 @@ namespace pp::internal
 		const auto print=
 		  [this](const size_t &iItem)
 		  {
+		    /// Human-readable description of an item and its lookahead set
 		    std::string res;
 		    res+="item \""+describe(items[iItem])+"\" containing the following symbols:\n";
 		    for(size_t iS=0;iS<symbols.size();iS++)
@@ -3888,6 +3926,7 @@ namespace pp::internal
 					       const size_t& iProduction)
     {
       const GrammarProduction& production=productions[iProduction];
+      /// Precedence assigned to the production being considered
       const size_t productionPrecedence=production.precedence(symbols);
       
       if(productionPrecedence==0 or symbol.precedence==0 or
@@ -3921,6 +3960,7 @@ namespace pp::internal
 						const size_t& iProduction)
     {
       const GrammarProduction& production=productions[iProduction];
+      /// Precedence assigned to the production being considered
       const size_t productionPrecedence=production.precedence(symbols);
       
       if(const size_t& transitionPrecedence=productions[transition.iStateOrProduction].precedence(symbols);productionPrecedence==0 or transitionPrecedence==0 or
@@ -3952,8 +3992,12 @@ namespace pp::internal
 	  
 	  for(size_t iIItem=0;iIItem<state.iItems.size();iIItem++)
 	    {
+	      /// Whether this item has already been printed in the diagnostic
 	      bool itemDescribed=0;
+	      
+	      /// Item being considered for a reduction transition
 	      const size_t iItem=state.iItems[iIItem];
+	      
 	      const GrammarItem& item=items[iItem];
 	      const size_t& iProduction=item.iProduction;
 	      const GrammarProduction& production=productions[iProduction];
@@ -4391,6 +4435,7 @@ namespace pp::internal
       
       std::copy(oth.iSymbolOfRegex.begin(),oth.iSymbolOfRegex.end(),iSymbolOfRegex.begin());
 
+      /// Parsed action annotations, used to fill the fixed-size action tables
       std::vector<GrammarAction> actions;
       for(size_t iAction=0;iAction<nActions();iAction++)
 	{
@@ -4597,10 +4642,15 @@ namespace pp::internal
 		    const auto& production=
 		      grammar.production(t.iStateOrProduction);
 		    //states.pop_back();
+		    
+		    /// Beginning of the parse-node range consumed by the reduction
 		    const size_t beg=cursor-production.nRhs();
+		    
+		    /// End of the parse-node range consumed by the reduction
 		    const size_t end=cursor;
 		    symbols.erase(symbols.begin()+beg,symbols.begin()+end);
 		    
+		    /// Reduced node containing the rhs nodes consumed by this production
 		    ParseTreeNode res{production.iAction,{std::make_move_iterator(parsedSymbols.begin()+beg),std::make_move_iterator(parsedSymbols.begin()+end)}};
 		    parsedSymbols.erase(parsedSymbols.begin()+beg,parsedSymbols.begin()+end);
 		    parsedSymbols.insert(parsedSymbols.begin()+beg,res);
@@ -4625,6 +4675,7 @@ namespace pp::internal
 		diagnostic("Symbols:\n");
 		for(size_t iiSymbol=0;iiSymbol<symbols.size();iiSymbol++)
 		  {
+		    /// Grammar symbol at the current parser-stack position
 		    const size_t iSymbol=symbols[iiSymbol];
 		    
 		    diagnostic("   ",iSymbol," ",grammar.symbols[iSymbol].name,"\n");
@@ -4750,6 +4801,7 @@ namespace pp::internal
     {
       diagnostic("\nGoing to match provided and required actions\n----------------------\n");
       
+      /// Action names that have a matching callback
       std::set<std::string> used;
       
       for(const std::string_view& s : requiredActions)
@@ -4770,6 +4822,7 @@ namespace pp::internal
 	    errorEmitter("required action: \"",ga.name,"\" not found");
 	}
       
+      /// Names of provided callbacks that no grammar action uses
       std::string unused;
       for(const auto& [s,f] : providedActions)
 	if(used.find((std::string)s)==used.end())
@@ -4785,12 +4838,14 @@ namespace pp::internal
     /// Callbacks returning null do not push a replacement value
     StackEl execParseTree(const std::vector<FlattenedParseTreeNode>& pt) const
     {
+      /// Semantic values produced by shifts and reductions so far
       Stack stack;
       
       for(size_t iPt=0;iPt<pt.size();iPt++)
 	{
 	  if(const ShiftNode* sn=std::get_if<ShiftNode>(&pt[iPt]))
 	    {
+	      /// Text matched by this shifted token
 	      const std::string_view s=sn->txt;
 	      diagnostic("Push string: ",s,"\n");
 	      stack.push_back(std::make_shared<T>(ST{std::string(s)}));
@@ -4798,6 +4853,7 @@ namespace pp::internal
 	  else
 	    {
 	      const ReduceNode& rn=*std::get_if<ReduceNode>(&pt[iPt]);
+	      /// Number of rhs semantic values consumed by this reduction
 	      const size_t n=rn.nSubNodes;
 	      
 	      diagnostic("Reducing ",n," symbols from stack of size ",stack.size(),"\n");
@@ -4837,6 +4893,7 @@ namespace pp::internal
 		    {
 		      const std::vector<GrammarActionPar>& pars=*acp.pars;
 		      
+		      /// Number of explicit arguments configured for this action
 		      const size_t nSubNodes=pars.size();
 		      subNodes.resize(nSubNodes);
 		      
