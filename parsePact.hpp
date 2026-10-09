@@ -317,15 +317,16 @@ namespace pp::internal
       return get(iEl);
     }
     
-    /// Merges a bitset of the same size, returning the number of differing bits
-    /// The count is taken before merging and includes bits set in either operand
+    /// Merges a bitset of the same size, returning the number of newly added bits
     constexpr size_t insert(const BitSet& oth)
     {
+      /// Number of bits newly added to this set
       size_t r=0;
       
       for(size_t i=0;i<data.size();i++)
 	{
-	  char c=data[i]^oth.data[i];
+	  /// Bits present in the source but not yet in this set
+	  const unsigned char c=oth.data[i]&~data[i];
 	  for(int i=0;i<8;i++)
 	    r+=(c>>i)&1;
 	  
