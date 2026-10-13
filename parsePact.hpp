@@ -269,6 +269,16 @@ namespace pp::internal
     return *u;
   }
   
+  /// True if T exactly matches one of Variant's std::variant alternatives.
+  /// Tests the alternative types, independently of the active alternative.
+  template <typename T,
+	    typename Variant>
+  concept VariantAlternative=
+    []<typename...Alternatives>(const std::variant<Alternatives...>*)
+    {
+      return (std::is_same_v<T,Alternatives> or ...);
+    }(static_cast<const Variant*>(nullptr));
+  
   /////////////////////////////////////////////////////////////////
   ////////////////// Ranges of characters /////////////////////////
   /////////////////////////////////////////////////////////////////
@@ -3892,7 +3902,7 @@ namespace pp::internal
     
     return tree;
   }
-
+  
   /////////////////////////////////////////////////////////////////
   
   /// Executes flattened parse trees using user-provided grammar actions
