@@ -3517,7 +3517,7 @@ namespace pp::internal
 		      " "+describe(transition)+"\n"
 		      "but could be reduced with production \'"+describe(production)+"' with precedence: "+std::to_string(productionPrecedence)+" symbol precedence: "+std::to_string(symbol.precedence)+" symbol associativity: "+std::to_string((int)symbol.associativity),"\n");
       else
-	if(productionPrecedence>symbol.precedence or (symbol.precedence==productionPrecedence and symbol.associativity==GrammarSymbol::Associativity::RIGHT))
+	if(productionPrecedence>symbol.precedence or (symbol.precedence==productionPrecedence and symbol.associativity==GrammarSymbol::Associativity::LEFT))
 	  {
 	    diagnostic("overriding shift ",describe(transition));
 	    transition.type=GrammarTransition::REDUCE;
@@ -3531,7 +3531,7 @@ namespace pp::internal
 	      diagnostic(" the production has precedence ",productionPrecedence," lesser than the symbol ",symbol.precedence,"\n");
 	    else
 	      diagnostic(" the production has the same precedence ",productionPrecedence," of the symbol, which has associatity ",(int)symbol.associativity,
-			 " different from right (",(int)GrammarSymbol::Associativity::RIGHT,"\n");
+		 " different from left (",(int)GrammarSymbol::Associativity::LEFT,"\n");
 	  }
     }
     
@@ -4096,7 +4096,6 @@ namespace pp::internal
       return std::move(stack.front());
     }
   };
-
   /////////////////////////////////////////////////////////////////
 }
 
