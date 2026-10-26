@@ -3987,7 +3987,7 @@ namespace pp::internal
     /// Evaluates shifts and reductions, returning the sole final stack value
     /// An intermediate reduction without an action produces an empty ST value;
     /// a final reduction without an action leaves the stack unchanged
-    /// Callbacks returning null do not push a replacement value
+    /// Callbacks returning null produce an empty ST value
     StackEl execParseTree(const std::vector<FlattenedParseTreeNode>& pt) const
     {
       /// Semantic values produced by shifts and reductions so far
@@ -4079,7 +4079,10 @@ namespace pp::internal
 		      stack.push_back(p);
 		    }
 		  else
-		    diagnostic(" no returned symbol\n");
+		    {
+		      diagnostic(" no returned symbol, pushing an empty value\n");
+		      stack.push_back(std::make_shared<T>(ST{std::monostate{}}));
+		    }
 		}
 	      
 	      diagnostic(" new stack size: ",stack.size(),"\n");
