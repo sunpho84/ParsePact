@@ -1715,7 +1715,7 @@ namespace pp::internal
     /// Import the static polymorphism cast
     using StaticPolymorphic<T>::self;
     
-    /// Match a string
+    /// Return the longest accepted prefix, retaining it if a longer candidate fails
     constexpr std::optional<RegexMatchingResult> match(std::string_view str) const
     {
       /// Original view on the string

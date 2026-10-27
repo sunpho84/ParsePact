@@ -6,6 +6,27 @@ constexpr auto matcher=
 
 static_assert(matcher.match<"aaa">()->matchedString.size()==3);
 
+/// Compile-time matching and tokenization use the same longest-prefix rule
+constexpr auto prefixMatcher=
+  pp::createRegexMatcher<"a","abc","b","x">();
+
+static_assert(prefixMatcher.match<"abx">()->matchedString=="a");
+static_assert(prefixMatcher.match<"ab">()->matchedString=="a");
+static_assert(prefixMatcher.match<"abcx">()->matchedString=="abc");
+static_assert(prefixMatcher.match<"abcx">()->iToken==1);
+static_assert(not prefixMatcher.match<"z">());
+
+constexpr auto prefixTokenizer=
+  pp::createTokenizer<"a","abc","b","x">();
+
+constexpr auto prefixTokens=
+  prefixTokenizer.tokenize<"abx">();
+
+static_assert(prefixTokens.size()==3);
+static_assert(prefixTokens[0].matchedString=="a" and prefixTokens[0].iToken==0);
+static_assert(prefixTokens[1].matchedString=="b" and prefixTokens[1].iToken==2);
+static_assert(prefixTokens[2].matchedString=="x" and prefixTokens[2].iToken==3);
+
 /// Compile-time tokenizer recognizing runs of 'a' characters and spaces
 constexpr auto tokenizer=
   pp::createTokenizer<"a+"," +">();
