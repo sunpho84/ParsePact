@@ -1719,7 +1719,10 @@ namespace pp::internal
     constexpr std::optional<RegexMatchingResult> match(std::string_view str) const
     {
       /// Original view on the string
-      const auto oriStr=str.begin();
+      const std::string_view input=str;
+      
+      /// Most recent accepted token and prefix, if any
+      std::optional<RegexMatchingResult> lastMatch;
       
       /// Start dState
       size_t dState=0;
@@ -1727,34 +1730,44 @@ namespace pp::internal
       while(dState<self().dStates.size())
 	{
 	  diagnostic("\nEntering dState ",dState,"\n");
-	  const char& c=
-	    str.empty()?'\0':str.front();
 	  
-	  diagnostic("trying to match char: \'",c,"\'\n");
+	  const auto& state=
+	    self().dStates[dState];
 	  
-	  /// First transition leaving the current state
-	  auto trans=self().transitions.begin()+self().dStates[dState].transitionsBegin;
-	  diagnostic("First transition: ",self().dStates[dState].transitionsBegin,"\n");
-	  while(trans!=self().transitions.end() and trans->iDStateFrom==dState and not((trans->beg<=c and trans->end>c)))
+	  if(state.accepting)
+	    lastMatch=RegexMatchingResult{input.substr(0,input.size()-str.size()),state.iToken};
+	  
+	  /// A past-end next state terminates scanning when no further input matches
+	  size_t nextDState=
+	    self().dStates.size();
+	  
+	  if(not str.empty())
 	    {
-	      diagnostic("Ignored transition ",rangeDescribe(trans->beg,trans->end),"\n");
-	      trans++;
+	      const char c=str.front();
+	      
+	      diagnostic("trying to match char: \'",c,"\'\n");
+	      
+	      /// First transition leaving the current state
+	      auto trans=self().transitions.begin()+state.transitionsBegin;
+	      diagnostic("First transition: ",state.transitionsBegin,"\n");
+	      while(trans!=self().transitions.end() and trans->iDStateFrom==dState and not((trans->beg<=c and trans->end>c)))
+		{
+		  diagnostic("Ignored transition ",rangeDescribe(trans->beg,trans->end),"\n");
+		  trans++;
+		}
+	      
+	      if(trans!=self().transitions.end() and trans->iDStateFrom==dState)
+		{
+		  nextDState=trans->nextDState;
+		  diagnostic("matched '",c,"' with trans ",trans->iDStateFrom," ",rangeDescribe(trans->beg,trans->end),", going to dState ",nextDState,"\n");
+		  str.remove_prefix(1);
+		}
 	    }
 	  
-	  if(trans!=self().transitions.end() and trans->iDStateFrom==dState)
-	    {
-	      dState=trans->nextDState;
-	      diagnostic("matched '",c,"' with trans ",trans->iDStateFrom," ",rangeDescribe(trans->beg,trans->end),", going to dState ",dState,"\n");
-	      str.remove_prefix(1);
-	    }
-	  else
-	    if(self().dStates[dState].accepting)
-	      return RegexMatchingResult{std::string_view{oriStr,str.begin()},self().dStates[dState].iToken};
-	    else
-	      dState=self().dStates.size();
+	  dState=nextDState;
 	}
       
-      return {};
+      return lastMatch;
     }
     
     /// Break a string into tokens - do not use directly, use through the Tokenizer wrapper
