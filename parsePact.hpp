@@ -1081,7 +1081,7 @@ namespace pp::internal
 	      if(ref.empty() or matchAnyCharIn("\n\r"))
 		errorEmitter("Unterminated literal or regex");
 	      
-	      escaped=(c=='\\');
+	      escaped=(c=='\\' and not escaped);
 	      c=matchAnyChar();
 	      diagnostic(" matched \'",c,"\'\n");
 	    }

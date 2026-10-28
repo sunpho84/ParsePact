@@ -1,5 +1,36 @@
 #include "parseConstPact.hpp"
 
+/// Only an odd run of backslashes escapes a grammar quote
+constexpr bool validateGrammarQuotes()
+{
+  bool success=true;
+  
+  for(const char delimiter : {'\'', '"'})
+    for(size_t count=0;count<=6;count++)
+      {
+        std::string contents(count,'\\');
+        
+        if(count%2!=0)
+          {
+            contents+=delimiter;
+            contents+="inside";
+          }
+        
+        const std::string input=
+          std::string(1,delimiter)+contents+delimiter+"tail";
+        pp::internal::StringMatcher matcher(input);
+        const auto matched=
+          matcher.matchLiteralOrRegex(delimiter,true);
+        
+        if(matched!=contents or matcher.ref!="tail")
+          success=false;
+      }
+  
+  return success;
+}
+
+static_assert(validateGrammarQuotes());
+
 /// Block-comment delimiters also scan safely during constant evaluation
 constexpr bool validateBlockComments()
 {
