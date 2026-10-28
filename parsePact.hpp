@@ -1021,30 +1021,25 @@ namespace pp::internal
       return res;
     }
     
-    /// Matches a block of text crossing lines if needed
+    /// Matches a block comment, reporting a missing closing delimiter
     constexpr bool matchBlockComment()
     {
-      /// Result to be returned
-      bool res;
+      /// Whether a complete block comment was matched
+      bool res=false;
       
-      if((res=matchStr("/*")))
+      if(matchStr("/*"))
 	{
-	  // diagnostic("matched beginning of block comment\n");
-	  
-	  while(not ref.empty() and not (res=(matchChar('*') and matchChar('/'))))
+	  while(not ref.empty() and not res)
 	    {
-	      // diagnostic("discarding '",ref.front(),"'\n");
-	      advance();
+	      res=matchStr("*/");
+	      
+	      if(not res)
+		advance();
 	    }
 	  
-	  // if(not std::is_constant_evaluated())
-	  //   if(res)
-	  //     printf("matched block comment end\n");
+	  if(not res)
+	    errorEmitter("Unterminated block comment");
 	}
-      // else
-      //   if(not std::is_constant_evaluated())
-      // 	if(not ref.empty())
-      // 	  printf("not matched %c as beginning of block comment\n",ref.front());
       
       return res;
     }

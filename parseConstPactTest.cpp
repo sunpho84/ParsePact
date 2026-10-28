@@ -1,5 +1,32 @@
 #include "parseConstPact.hpp"
 
+/// Block-comment delimiters also scan safely during constant evaluation
+constexpr bool validateBlockComments()
+{
+  bool success=true;
+  
+  for(const char* input : {"/**/tail","/***/tail","/****/tail",
+                           "/* *x **/tail","/* first\nsecond */tail"})
+    {
+      pp::internal::StringMatcher matcher(input);
+      
+      if(not matcher.matchBlockComment() or matcher.ref!="tail")
+        success=false;
+    }
+  
+  for(const char* input : {"","/","*","/x","ordinary"})
+    {
+      pp::internal::StringMatcher matcher(input);
+      
+      if(matcher.matchBlockComment() or matcher.ref!=input)
+        success=false;
+    }
+  
+  return success;
+}
+
+static_assert(validateBlockComments());
+
 /// Compile-time regex matcher recognizing one or more 'a' characters
 constexpr auto matcher=
   pp::createRegexMatcher<"a+">();
