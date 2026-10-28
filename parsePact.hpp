@@ -221,8 +221,8 @@ namespace pp::internal
   ///////////////////////// Diagnostic ////////////////////////////
   /////////////////////////////////////////////////////////////////
   
-  /// Emit the error. Can be run only at compile time, so the error will
-  /// be prompted at compile time if invoked in a constexpr
+  /// Print an error and exit at runtime; reaching this non-constexpr function
+  /// during constant evaluation rejects the expression at compile time
   template <typename...Args>
   inline void errorEmitter(Args&&...args)
   {
