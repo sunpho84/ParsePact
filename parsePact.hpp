@@ -1771,28 +1771,26 @@ namespace pp::internal
     }
     
     /// Break a string into tokens - do not use directly, use through the Tokenizer wrapper
+    /// Empty input produces no tokens; every successful token must consume input
     constexpr auto _tokenize(std::string_view v) const
     {
       /// Resulting matched regex
       std::vector<RegexMatchingResult> res;
       
-      /// Holds current state
-      bool scanned;
-      
-      do
+      while(not v.empty())
 	{
-	  auto s=match(v);
-	  scanned=(bool)s;
+	  const auto s=match(v);
 	  
-	  if(scanned)
+	  if(not s)
+	    errorEmitter("Unable to parse");
+	  else if(s->matchedString.empty())
+	    errorEmitter("token regex ",s->iToken," matched an empty string");
+	  else
 	    {
 	      res.push_back(*s);
 	      v.remove_prefix(s->matchedString.length());
 	    }
-	  else
-	    errorEmitter("Unable to parse");
 	}
-      while(scanned and not v.empty());
       
       return res;
     }
@@ -3812,7 +3810,7 @@ namespace pp::internal
 		auto r=grammar.regexMatcher.match(input);
 		m=r.has_value();
 		
-		if(r)
+		if(r and not r->matchedString.empty())
 		  {
 		    input={input.begin()+r->matchedString.length(),input.end()};
 		    iNextSymbol=grammar.iSymbolOfRegex[r->iToken];
@@ -3825,6 +3823,8 @@ namespace pp::internal
 		    diagnostic("matched string: \"",r->matchedString,"\" corresponding to symbol ",iNextSymbol," \"",grammar.symbols[iNextSymbol].name,"\"\n");
 		    i++;
 		  }
+		else if(r)
+		  errorEmitter("token regex ",r->iToken," matched an empty string");
 		else
 		  errorEmitter("unable to match \"",input,"\"");
 	      }

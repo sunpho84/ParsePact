@@ -27,6 +27,16 @@ static_assert(prefixTokens[0].matchedString=="a" and prefixTokens[0].iToken==0);
 static_assert(prefixTokens[1].matchedString=="b" and prefixTokens[1].iToken==2);
 static_assert(prefixTokens[2].matchedString=="x" and prefixTokens[2].iToken==3);
 
+static_assert(prefixTokenizer.tokenize<"">().empty());
+
+/// Nullable regexes remain usable when every actual token consumes input
+constexpr auto nullableTokenizer=
+  pp::createTokenizer<"a*">();
+
+static_assert(nullableTokenizer.tokenize<"">().empty());
+static_assert(nullableTokenizer.tokenize<"aaa">().size()==1);
+static_assert(nullableTokenizer.tokenize<"aaa">()[0].matchedString=="aaa");
+
 /// Compile-time tokenizer recognizing runs of 'a' characters and spaces
 constexpr auto tokenizer=
   pp::createTokenizer<"a+"," +">();
