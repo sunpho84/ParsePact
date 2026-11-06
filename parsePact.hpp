@@ -253,7 +253,7 @@ namespace pp::internal
   {
     return std::visit([](const auto& x)
     {
-      return typeid(decltype(x)).name();
+      return typeid(x).name();
     },v);
   }
   
