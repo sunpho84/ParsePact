@@ -269,15 +269,23 @@ namespace pp::internal
     return *u;
   }
   
-  /// True if T exactly matches one of Variant's std::variant alternatives.
-  /// Tests the alternative types, independently of the active alternative.
+  /// Test whether T exactly matches one of a variant's alternatives
+  template <typename T,
+	    typename Variant>
+  struct IsVariantAlternative;
+
+  template <typename T,
+	    typename...Alternatives>
+  struct IsVariantAlternative<T,std::variant<Alternatives...>> :
+    std::bool_constant<(std::is_same_v<T,Alternatives> or ...)>
+  {
+  };
+
+  /// True if T is a variant alternative, independently of the active value
   template <typename T,
 	    typename Variant>
   concept VariantAlternative=
-    []<typename...Alternatives>(const std::variant<Alternatives...>*)
-    {
-      return (std::is_same_v<T,Alternatives> or ...);
-    }(static_cast<const Variant*>(nullptr));
+    IsVariantAlternative<T,std::remove_cvref_t<Variant>>::value;
   
   /////////////////////////////////////////////////////////////////
   ////////////////// Ranges of characters /////////////////////////
@@ -1208,6 +1216,9 @@ namespace pp::internal
     /// Print the current node, and all subnodes iteratively, indenting more and more
     constexpr void printf(const int& indLv=0) const
     {
+      if(not valid())
+	errorEmitter("Cannot print an invalid regex parse tree node");
+
       /// String used to indent
       char* ind=new char[indLv+1];
       
@@ -1296,6 +1307,8 @@ namespace pp::internal
 	case TOKEN:
 	  nullable=true;
 	  break;
+	case INVALID:
+	  errorEmitter("Cannot compute nullability of an invalid regex parse tree node");
 	}
     }
     
@@ -1333,6 +1346,8 @@ namespace pp::internal
 	  firsts.push_back(this);
 	  lasts.push_back(this);
 	  break;
+	case INVALID:
+	  errorEmitter("Cannot compute firsts and lasts of an invalid regex parse tree node");
 	}
     }
     
