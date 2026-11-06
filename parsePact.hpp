@@ -189,8 +189,8 @@ namespace pp::internal
 	{
 	  /// Bits present in the source but not yet in this set
 	  const unsigned char c=oth.data[i]&~data[i];
-	  for(int i=0;i<8;i++)
-	    r+=(c>>i)&1;
+	  for(int iBit=0;iBit<8;iBit++)
+	    r+=(c>>iBit)&1;
 	  
 	  data[i]|=oth.data[i];
 	}
