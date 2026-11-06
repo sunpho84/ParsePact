@@ -2046,17 +2046,15 @@ namespace pp::internal
 	{
 	case Type::NULL_SYMBOL:
 	  return "NULL";
-	  break;
 	case Type::TERMINAL_SYMBOL:
 	  return "TERMINAL";
-	  break;
 	case Type::NON_TERMINAL_SYMBOL:
 	  return "NON_TERMINAL";
-	  break;
 	case Type::END_SYMBOL:
 	  return "END";
-	  break;
 	}
+
+      errorEmitter("Unknown grammar symbol type");
     }
     
     //// Type of this symbol
