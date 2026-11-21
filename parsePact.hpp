@@ -2237,11 +2237,9 @@ namespace pp::internal
 	  isVariadic=false;
 	  
 	  bool matchedSomething{};
-	  bool matchedEnd{};
-	  while((not actionMatcher.ref.empty()) and
-		(not (matchedEnd=actionMatcher.matchChar(')')) and
-		 ((not matchedSomething) or
-		  actionMatcher.matchChar(','))))
+	  while(not actionMatcher.ref.empty() and
+		 not actionMatcher.matchChar(')') and
+		 (not matchedSomething or actionMatcher.matchChar(',')))
 	    {
 	      if(actionMatcher.matchChar('$'))
 		{
