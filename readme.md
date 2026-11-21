@@ -32,6 +32,29 @@ generator](https://github.com/cwbaker/lalr/) by Charles Baker.
 
 See the [development notes](doc/develop.md)
 
+## Grammar source positions
+
+The grammar reader tracks a `pp::SourceCursor` containing a zero-based byte
+`offset` and one-based `line` and `column`. Columns count bytes, including one
+column per tab; LF, CRLF, and lone CR are recognized as line endings. Tentative
+matches restore the cursor when they roll back.
+
+Grammar syntax errors include the position of the next byte or end of input:
+
+```text
+Error: line 3, column 1 (offset 13): Expected ';' after production
+```
+
+Symbols retain their first occurrence and production alternatives retain their
+start position. Undefined or unreferenced symbols and parser conflicts report
+those locations after grammar parsing has finished. These positions refer to
+the supplied grammar string, including any leading newline in a raw literal.
+
+Cursor updates work during constant evaluation. Invalid constexpr grammar
+construction remains a compiler error: it reaches the non-constexpr diagnostic
+function. Runtime input tokens, AST source spans, regex-internal errors, and
+semantic-action argument errors do not yet carry grammar-wide source positions.
+
 ## Example - outdated
 In the following example we show the regex parser in action, detecting a json real number, at compile time
 ```c++

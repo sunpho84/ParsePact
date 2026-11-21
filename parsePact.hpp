@@ -816,12 +816,72 @@ namespace pp::internal
   /////////////////////// Matches strings /////////////////////////
   /////////////////////////////////////////////////////////////////
   
+  /// Position of the next byte, with one-based line and column numbers
+  struct SourceCursor
+  {
+    /// Zero-based byte offset from the beginning of the source
+    size_t offset{0};
+    
+    /// One-based source line, treating CRLF as a single newline
+    size_t line{1};
+    
+    /// One-based byte column; a tab occupies one column
+    size_t column{1};
+    
+    /// Whether the preceding byte was CR, including across separate advances
+    bool afterCarriageReturn{false};
+    
+    /// Consume one byte and update the position of the following byte
+    constexpr void advance(const char c)
+    {
+      offset++;
+      
+      if(c=='\r')
+        {
+          line++;
+          column=1;
+        }
+      else if(c=='\n')
+        {
+          if(not afterCarriageReturn)
+            line++;
+          
+          column=1;
+        }
+      else
+        column++;
+      
+      afterCarriageReturn=c=='\r';
+    }
+    
+    /// Compare complete positions, including the state needed for CRLF handling
+    constexpr bool operator==(const SourceCursor&) const=default;
+    
+    /// Report a source location and terminate; invalid constant evaluation is rejected
+    template <typename...Args>
+    [[noreturn]] void error(Args&&...args) const
+    {
+      errorEmitter("line ",line,", column ",column," (offset ",offset,
+                   "): ",std::forward<Args>(args)...);
+    }
+  };
+  
   /// Holds string to be matched, provides matching functionalities,
   /// and holds the matching status
   struct StringMatcher
   {
     /// String view to the data to be matched
     std::string_view ref;
+    
+    /// Position of the first byte in ref, restored together with tentative matches
+    SourceCursor cursor;
+    
+    /// Report an error at the current input position
+    template <typename...Args>
+    [[noreturn]] void error(Args&&...args) const
+    {
+      cursor.error(std::forward<Args>(args)...);
+    }
     
     /// Returns an undoer, which rewinds the matcher if not accepted
     constexpr auto beginTemptativeMatch(const char* descr,
@@ -836,15 +896,23 @@ namespace pp::internal
 				},acceptedByDefault);
     }
     
-    /// Construct from a string view
-    constexpr StringMatcher(const std::string_view& in) :
-      ref(in)
+    /// Construct from a string view and an optional enclosing-source position
+    constexpr StringMatcher(const std::string_view& in,
+                            const SourceCursor& origin={}) :
+      ref(in),
+      cursor(origin)
     {
     }
     
-    /// Advance the reference
-    constexpr void advance(const size_t& n=1)
+    /// Advance the reference and cursor by n bytes, rejecting movement past the end
+    constexpr void advance(const size_t n=1)
     {
+      if(n>ref.size())
+        error("Cannot advance beyond the end of the input");
+      
+      for(size_t i=0;i<n;i++)
+        cursor.advance(ref[i]);
+      
       ref.remove_prefix(n);
     }
     
@@ -1046,7 +1114,7 @@ namespace pp::internal
 	    }
 	  
 	  if(not res)
-	    errorEmitter("Unterminated block comment");
+	    error("Unterminated block comment");
 	}
       
       return res;
@@ -1086,8 +1154,8 @@ namespace pp::internal
 	  
 	  do
 	    {
-	      if(ref.empty() or matchAnyCharIn("\n\r"))
-		errorEmitter("Unterminated literal or regex");
+	      if(ref.empty() or ref.front()=='\n' or ref.front()=='\r')
+		error("Unterminated literal or regex");
 	      
 	      escaped=(c=='\\' and not escaped);
 	      c=matchAnyChar();
@@ -1096,7 +1164,7 @@ namespace pp::internal
 	  while(escaped or c!=delim);
 	  
 	  if((beg.begin()+1==ref.begin()-1) and not acceptEmpty )
-	    errorEmitter("Empty literal or regex");
+	    error("Empty literal or regex");
 	  
 	  res.accept();
 	  
@@ -2080,6 +2148,9 @@ namespace pp::internal
   struct GrammarSymbol :
     BaseGrammarSymbol
   {
+    /// First occurrence in the grammar definition, before delimiters for terminal symbols
+    SourceCursor cursor;
+    
     /// Possible associativities of a symbol
     enum class Associativity{NONE,LEFT,RIGHT};
     
@@ -2109,8 +2180,10 @@ namespace pp::internal
     
     /// Construct the symbol
     constexpr GrammarSymbol(const std::string_view& name,
-			    const Type& type) :
+                            const Type& type,
+                            const SourceCursor& origin={}) :
       BaseGrammarSymbol{name,type},
+      cursor(origin),
       associativity(Associativity::NONE),
       precedence(0),
       referredAsPrecedenceSymbol(false),
@@ -2142,6 +2215,9 @@ namespace pp::internal
     
     /// Index of the action to be accomplished when matching
     std::optional<size_t> iAction;
+    
+    /// Start of this production alternative in the grammar definition
+    SourceCursor cursor{};
     
     /// Returns the number of symbols on the rhs
     constexpr size_t nRhs() const
@@ -2622,7 +2698,8 @@ namespace pp::internal
     
     /// Finds or insert a symbol
     constexpr size_t insertOrFindSymbol(const std::string_view& name,
-					const GrammarSymbol::Type& type)
+					const GrammarSymbol::Type& type,
+					const SourceCursor& origin)
     {
       GrammarSymbol* s;
       
@@ -2635,7 +2712,7 @@ namespace pp::internal
 			      });ref!=symbols.end())
 	s=&(*ref);
       else
-	s=&symbols.emplace_back(name,type);
+	s=&symbols.emplace_back(name,type,origin);
       
       return std::distance(symbols.begin(),(std::vector<GrammarSymbol>::iterator)s);
     }
@@ -2644,15 +2721,16 @@ namespace pp::internal
     constexpr std::optional<size_t> matchAndParseSymbol(StringMatcher& m)
     {
       m.matchWhiteSpaceOrComments();
+      const SourceCursor origin=m.cursor;
       
       if(m.matchStr("error"))
 	return iErrorSymbol;
       else if(auto l=m.matchLiteral();not l.empty())
-	return insertOrFindSymbol(l,GrammarSymbol::Type::TERMINAL_SYMBOL);
+	return insertOrFindSymbol(l,GrammarSymbol::Type::TERMINAL_SYMBOL,origin);
       else if(auto r=m.matchRegex();not r.empty())
-	return insertOrFindSymbol(r,GrammarSymbol::Type::TERMINAL_SYMBOL);
+	return insertOrFindSymbol(r,GrammarSymbol::Type::TERMINAL_SYMBOL,origin);
       else if(auto i=m.matchId();not i.empty())
-	return insertOrFindSymbol(i,GrammarSymbol::Type::NON_TERMINAL_SYMBOL);
+	return insertOrFindSymbol(i,GrammarSymbol::Type::NON_TERMINAL_SYMBOL,origin);
       
       return std::nullopt;
     }
@@ -2699,7 +2777,7 @@ namespace pp::internal
 	  if((matchRes.state=matchin.matchChar(';')))
 	    diagnostic("Matched associativity statement end\n");
 	  else
-	    errorEmitter("Unterminated associativity statement");
+	    matchin.error("Unterminated associativity statement");
 	}
       
       return matchRes;
@@ -2714,10 +2792,12 @@ namespace pp::internal
       
       matchin.matchWhiteSpaceOrComments();
       
+      const SourceCursor origin=matchin.cursor;
+      
       if(auto i=matchin.matchId();not i.empty())
 	{
 	  auto iLhs=
-	    insertOrFindSymbol(i,GrammarSymbol::Type::NON_TERMINAL_SYMBOL);
+	    insertOrFindSymbol(i,GrammarSymbol::Type::NON_TERMINAL_SYMBOL,origin);
 	  diagnostic("Found lhs: ",symbols[iLhs].name,"\n");
 	  
 	  // Add the first symbol found as a starting reduction
@@ -2736,6 +2816,7 @@ namespace pp::internal
 		  /// Right hand side of the production
 		  std::vector<size_t> iRhss;
 		  matchin.matchWhiteSpaceOrComments();
+		  const SourceCursor productionOrigin=matchin.cursor;
 		  while(std::optional<size_t> iMatchedSymbol=matchAndParseSymbol(matchin))
 		    {
 		      iRhss.push_back(*iMatchedSymbol);
@@ -2749,7 +2830,7 @@ namespace pp::internal
 		      if((iPrecedenceSymbol=matchAndParseSymbol(matchin)))
 			symbols[*iPrecedenceSymbol].referredAsPrecedenceSymbol=true;
 		      else
-			errorEmitter("Expected symbol from which to infer the precedence");
+			matchin.error("Expected symbol from which to infer the precedence");
 		      
 		      matchin.matchWhiteSpaceOrComments();
 		    }
@@ -2765,7 +2846,7 @@ namespace pp::internal
 		      actionString={beg,matchin.ref.begin()};
 		      
 		      if(not matchin.matchChar(']'))
-			errorEmitter("Expected end of action ']'");
+			matchin.error("Expected end of action ']'");
 		      
 		      matchin.matchWhiteSpaceOrComments();
 		    }
@@ -2777,6 +2858,7 @@ namespace pp::internal
 		    maybeIAction=maybeAddToUniqueVector(actionStrings,actionString).second;
 		  
 		  productions.emplace_back(iLhs,iRhss,iPrecedenceSymbol,maybeIAction);
+		  productions.back().cursor=productionOrigin;
 		  
 		  diagnostic("ADDED production: \"",describe(productions.back()),"\"\n");
 		}
@@ -2784,7 +2866,11 @@ namespace pp::internal
 	      
 	      if((matchRes.state=matchin.matchChar(';')))
 		diagnostic("Found production statement end\n");
+	      else
+		matchin.error("Expected ';' after production");
 	    }
+	  else
+	    matchin.error("Expected ':' after production name");
 	}
       
       return matchRes;
@@ -2821,6 +2907,9 @@ namespace pp::internal
 	    }
 	  
 	  matchRes.state=matchin.matchChar(';');
+          
+	  if(not matchRes.state)
+	    matchin.error("Expected ';' after whitespace declaration");
 	}
       
       return matchRes;
@@ -2869,19 +2958,19 @@ namespace pp::internal
 	      
 	      match.matchWhiteSpaceOrComments();
 	      if(not match.matchChar('}'))
-		errorEmitter("Unfinished grammar, reference is: \"",match.ref,"\"\n");
+		match.error("Expected a grammar statement or closing '}'");
 	      
 	      match.matchWhiteSpaceOrComments();
 	      if(not match.ref.empty())
-		errorEmitter("Unfinished parsing!\n");
+		match.error("Unexpected text after the grammar");
 	      else
 		diagnostic("Grammar parsing correctly ended\n");
 	    }
 	  else
-	    errorEmitter("Empty grammar\n");
+	    match.error("Expected '{' after grammar name");
 	}
       else
-	errorEmitter("Unmatched id to name the grammar\n");
+	match.error("Expected a grammar name");
     }
     
     /// Performs some test of the grammar
@@ -2895,7 +2984,7 @@ namespace pp::internal
       // Check that all symbols are referenced at least once and defined
       for(const GrammarSymbol& s : symbols)
 	if(s.type==GrammarSymbol::Type::NON_TERMINAL_SYMBOL and s.iProductions.empty() and not s.referredAsPrecedenceSymbol)
-	  errorEmitter("Undefined symbol: \"",s.name,"\"");
+	  s.cursor.error("Undefined symbol: \"",s.name,"\"");
       
       /// Count of symbols usage as rhs or precedence
       std::vector<size_t> symbolsCount(symbols.size(),0);
@@ -2913,7 +3002,7 @@ namespace pp::internal
 	if(const std::array<size_t,4> filt{iStartSymbol,iEndSymbol,iErrorSymbol,iWhitespaceSymbol};
 	   std::find(filt.begin(),filt.end(),iSymbol)==filt.end())
 	  if(symbolsCount[iSymbol]==0)
-	    errorEmitter("Unreferenced symbol: \"",symbols[iSymbol].name,"\"\n");
+	    symbols[iSymbol].cursor.error("Unreferenced symbol: \"",symbols[iSymbol].name,"\"\n");
     }
     
     /// Remove the references to a symbol
@@ -3539,7 +3628,7 @@ namespace pp::internal
       
       if(productionPrecedence==0 or symbol.precedence==0 or
 	 (symbol.precedence==productionPrecedence and symbol.associativity==GrammarSymbol::Associativity::NONE))
-	errorEmitter(std::string("shift/reduce conflict, at state:\n")+describe(stateFrom,"       ")+
+	production.cursor.error(std::string("shift/reduce conflict, at state:\n")+describe(stateFrom,"       ")+
 		      " "+describe(transition)+"\n"
 		      "but could be reduced with production \'"+describe(production)+"' with precedence: "+std::to_string(productionPrecedence)+" symbol precedence: "+std::to_string(symbol.precedence)+" symbol associativity: "+std::to_string((int)symbol.associativity),"\n");
       else
@@ -3573,7 +3662,7 @@ namespace pp::internal
       
       if(const size_t& transitionPrecedence=productions[transition.iStateOrProduction].precedence(symbols);productionPrecedence==0 or transitionPrecedence==0 or
 	 productionPrecedence==transitionPrecedence)
-	errorEmitter(std::string("reduce/reduce conflict, at state:\n")+describe(stateFrom,"       ")+
+	production.cursor.error(std::string("reduce/reduce conflict, at state:\n")+describe(stateFrom,"       ")+
 		      describe(transition)+" for '"+std::string(symbols[production.iLhs()].name)+"' on '"+std::string(symbol.name)+
 		      "\nproduction precedence: "+std::to_string(productionPrecedence)+" transition precedence: "+std::to_string(transitionPrecedence));
       else
@@ -4133,6 +4222,8 @@ namespace pp::internal
 /// Public aliases for regex matching, tokenization, grammar creation, and execution
 namespace pp
 {
+  using pp::internal::SourceCursor;
+  
   using pp::internal::RegexMatcher;
   using pp::internal::createRegexMatcher;
   
