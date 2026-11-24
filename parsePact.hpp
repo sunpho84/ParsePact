@@ -221,14 +221,62 @@ namespace pp::internal
   ///////////////////////// Diagnostic ////////////////////////////
   /////////////////////////////////////////////////////////////////
   
+  struct SourceLocation;
+  
+  /// Optional runtime position supplied by an interpreter using the parser
+  inline thread_local const SourceLocation* errorLocation=nullptr;
+  
+  /// Write the current source position without owning its caller-provided label
+  inline void writeErrorLocation(std::ostream& output,
+                                 const SourceLocation& location);
+  
+  /// Optional interpreter footer, emitted only on a fatal diagnostic
+  inline thread_local void (*errorFooter)(std::ostream&)=nullptr;
+  
+  /// Write retained source text and underline the offending token
+  inline void writeErrorExcerpt(std::ostream& output,
+                                const SourceLocation& location);
+  
+  /// Temporarily select a runtime diagnostic position, restoring the caller on exit
+  struct ScopedErrorLocation
+  {
+    /// Position active before this scope
+    const SourceLocation* previous;
+    
+    /// A null position suppresses an enclosing context for explicitly located errors
+    explicit ScopedErrorLocation(const SourceLocation* location) :
+      previous(errorLocation)
+    {
+      errorLocation=location;
+    }
+    
+    /// Restore nested evaluation's caller position
+    ~ScopedErrorLocation()
+    {
+      errorLocation=previous;
+    }
+    
+    /// A diagnostic scope has one owner and must not be copied
+    ScopedErrorLocation(const ScopedErrorLocation&)=delete;
+    
+    /// Assignment must not overwrite an active scope's restoration state
+    ScopedErrorLocation& operator=(const ScopedErrorLocation&)=delete;
+  };
+  
   /// Print an error and exit at runtime; reaching this non-constexpr function
   /// during constant evaluation rejects the expression at compile time
   template <typename...Args>
   [[noreturn]] inline void errorEmitter(Args&&...args)
   {
     std::cerr<<"Error: ";
+    if(errorLocation)
+      writeErrorLocation(std::cerr,*errorLocation);
     ((std::cerr<<args),...);
     std::cerr<<"\n";
+    if(errorLocation)
+      writeErrorExcerpt(std::cerr,*errorLocation);
+    if(errorFooter)
+      errorFooter(std::cerr);
     exit(1);
   }
   
@@ -863,6 +911,70 @@ namespace pp::internal
     {
       errorEmitter("line ",line,", column ",column," (offset ",offset,
                    "): ",std::forward<Args>(args)...);
+    }
+  };
+  
+  /// Source-labelled cursor; the label borrows caller-owned storage
+  struct SourceLocation
+  {
+    /// File name or another caller-supplied source label
+    std::string_view source{};
+    
+    /// Position within that source
+    SourceCursor cursor{};
+    
+    /// Original source line, borrowed from the caller
+    std::string_view lineText{};
+    
+    /// Number of bytes to underline, clipped to the retained line
+    size_t extent{1};
+    
+    /// Report the original source position and terminate
+    template <typename...Args>
+    [[noreturn]] void error(Args&&...args) const
+    {
+      const ScopedErrorLocation explicitPosition(this);
+      errorEmitter(std::forward<Args>(args)...);
+    }
+  };
+  
+  inline void writeErrorLocation(std::ostream& output,
+                                 const SourceLocation& location)
+  {
+    if(location.source.empty())
+      output<<"line "<<location.cursor.line<<", column "<<location.cursor.column;
+    else
+      output<<location.source<<':'<<location.cursor.line<<':'<<location.cursor.column;
+    output<<" (offset "<<location.cursor.offset<<"): ";
+  }
+  
+  inline void writeErrorExcerpt(std::ostream& output,
+                                const SourceLocation& location)
+  {
+    if(not location.lineText.empty())
+      {
+        output<<"  "<<location.lineText<<'\n'<<"  ";
+        const size_t column=std::min(location.cursor.column-1,location.lineText.size());
+        for(size_t i=0;i<column;i++)
+          output<<(location.lineText[i]=='\t'?'\t':' ');
+        output<<'^';
+        const size_t extent=std::min(location.extent,location.lineText.size()-column);
+        for(size_t i=1;i<extent;i++)
+          output<<'~';
+        output<<'\n';
+      }
+  }
+  
+  /// Default locator for a single unnamed or labelled input string
+  struct SourceLocator
+  {
+    /// Label retained by shifted tokens and diagnostics
+    std::string_view source{};
+    
+    /// Preserve the input cursor without remapping it
+    constexpr SourceLocation operator()(const SourceCursor& cursor) const
+    {
+      return {source,cursor};
     }
   };
   
@@ -1803,7 +1915,8 @@ namespace pp::internal
     using StaticPolymorphic<T>::self;
     
     /// Return the longest accepted prefix, retaining it if a longer candidate fails
-    constexpr std::optional<RegexMatchingResult> match(std::string_view str) const
+    constexpr std::optional<RegexMatchingResult> match(std::string_view str,
+                                                       size_t* traversed=nullptr) const
     {
       /// Original view on the string
       const std::string_view input=str;
@@ -1853,6 +1966,9 @@ namespace pp::internal
 	  
 	  dState=nextDState;
 	}
+      
+      if(traversed)
+        *traversed=input.size()-str.size();
       
       return lastMatch;
     }
@@ -2142,6 +2258,15 @@ namespace pp::internal
     
     //// Type of this symbol
     Type type;
+    
+    /// Optional borrowed diagnostic label, with the same lifetime requirements as name
+    std::string_view displayName{};
+    
+    /// Keep recognition spelling unchanged while presenting an application-supplied label
+    constexpr std::string_view diagnosticName() const
+    {
+      return displayName.empty()?name:displayName;
+    }
   };
   
   /// A symbol of a grammar, comprehensive information
@@ -3801,11 +3926,36 @@ namespace pp::internal
     return Grammar(str);
   }
 
+  /// Half-open byte range in the parser's joined input
+  struct SourceRange
+  {
+    /// First byte of the construct
+    SourceCursor begin{};
+    
+    /// Position immediately after the construct
+    SourceCursor end{};
+  };
+  
   /// Shifted token in a flattened parse tree
   struct ShiftNode
   {
     /// Matched text, borrowing the input string
     std::string_view txt;
+    
+    /// Position of this token's first byte
+    SourceCursor cursor{};
+    
+    /// Contiguous skipped text immediately before this token, borrowing the input
+    std::string_view leadingTrivia{};
+    
+    /// Position of the first skipped byte, or the token position when none was skipped
+    SourceCursor triviaCursor{};
+    
+    /// Original source position supplied by the caller's locator
+    std::optional<SourceLocation> location{};
+    
+    /// Actual token extent, including zero-width inserted editor tokens
+    std::optional<SourceRange> range{};
   };
   
   /// Reduction in a flattened parse tree
@@ -3816,6 +3966,9 @@ namespace pp::internal
     
     /// Number of rhs children consumed by the reduction
     size_t nSubNodes;
+    
+    /// Extent of the complete reduced construct
+    SourceRange range{};
   };
   
   /// Postorder parse-tree entry, representing a shift or a reduction
@@ -3826,15 +3979,21 @@ namespace pp::internal
   struct ParseTreeNode
   {
     /// Matched text for a shift, or optional action index for a reduction
-    std::variant<std::string_view,std::optional<size_t>> data;
+    std::variant<ShiftNode,std::optional<size_t>> data;
     
     /// Children in their original rhs order
     std::vector<ParseTreeNode> subNodes;
     
+    /// Grammar symbol represented by this subtree
+    size_t symbol{};
+    
+    /// Extent of the subtree in the original input
+    SourceRange range{};
+    
     /// Detects whether the node holds a shifted token
     constexpr bool isShift() const
     {
-      return std::get_if<std::string_view>(&data);
+      return std::get_if<ShiftNode>(&data);
     }
     
     /// Detects whether the node holds a reduction
@@ -3846,7 +4005,7 @@ namespace pp::internal
     /// Returns the matched text; the node must be a shift
     constexpr std::string_view getShiftString() const
     {
-      return *std::get_if<std::string_view>(&data);
+      return std::get<ShiftNode>(data).txt;
     }
     
     /// Returns the optional action index; the node must be a reduction
@@ -3856,172 +4015,361 @@ namespace pp::internal
     }
   };
   
-  /// Parses input and returns the tree in postorder, with children before parents
-  /// Returns a vector of flattened nodes
-  /// Shifted text borrows input, which must outlive the returned tree
-  template <typename G>
-    constexpr auto createParseTree(const G& grammar,
-				   std::string_view input)
+  /// One non-whitespace token emitted by the grammar's actual lexer
+  struct ParseToken
   {
-    bool endReached=false;
-    bool m;
-    size_t i=0;
-    std::vector<size_t> states{0};
-    std::vector<size_t> symbols{};
-    size_t cursor=0;
+    /// Terminal symbol index
+    size_t symbol{};
     
-    /// Holds a node in the parse tree of the expression
-    std::vector<ParseTreeNode> parsedSymbols;
+    /// Original text and source location
+    ShiftNode shift{};
+  };
+  
+  /// Recoverable lexer or parser error with a complete offending range
+  struct ParseDiagnostic
+  {
+    /// Offending token, or the position of a missing token
+    SourceRange range{};
     
-    do
+    /// Description independent of source-file formatting
+    std::string message;
+    
+    /// Terminals which the parser could accept at this point
+    std::vector<size_t> expected;
+  };
+  
+  /// Retained parser trees, tokens, and diagnostics for one input revision
+  struct ParsedInput
+  {
+    /// Tokens retain views into the caller-owned input
+    std::vector<ParseToken> tokens;
+    
+    /// Whitespace and comments recognized by the same lexer
+    std::vector<ShiftNode> trivia;
+    
+    /// Complete root, or the surviving forest when recovery cannot finish
+    std::vector<ParseTreeNode> roots;
+    
+    /// All lexer and parser errors discovered during this pass
+    std::vector<ParseDiagnostic> diagnostics;
+    
+    /// Whether the grammar's start symbol was completed
+    bool accepted{false};
+  };
+  
+  /// Tokenize once using the grammar's regex matcher, retaining source extents
+  template <typename G,
+            typename Locator=SourceLocator>
+  constexpr ParsedInput tokenizeInput(const G& grammar,
+                                       std::string_view input,
+                                       const Locator& locate={},
+                                       const bool recover=false)
+  {
+    ParsedInput result;
+    SourceCursor cursor;
+    SourceCursor triviaCursor;
+    std::string_view trivia;
+    while(not input.empty())
       {
-	const size_t iState=states.back();
-	
-	diagnostic("/////////////////////////////////////////////////////////////////\n");
-	
-	diagnostic("At state: ",iState,"\n");
-	diagnostic(grammar.describeState(iState));
-	
-	for(size_t iTransition=0;iTransition<grammar.nTransitionsOfState(iState);iTransition++)
-	  diagnostic(grammar.describeStateTransition(iState,iTransition));
-	
-	size_t iNextSymbol=0;
-	
-	if(cursor<symbols.size())
-	  {
-	    iNextSymbol=symbols[cursor];
-	    diagnostic("No need to parse, nextToken from cursor: ",iNextSymbol,"=\"",grammar.symbols[iNextSymbol].name,"\"\n");
-	  }
-	else
-	  {
-	    diagnostic("Parsed ",i," tokens, going to parse: \"",input,"\"\n");
-	    
-	    if(input.empty())
-	      {
-		if(not endReached)
-		  {
-		    diagnostic("Reached the end of the string\n");
-		    endReached=true;
-		    iNextSymbol=grammar.iEndSymbol;
-		    symbols.emplace(symbols.begin()+cursor,iNextSymbol);
-		    m=true;
-		  }
-		else
-		  diagnostic("End of the string already reached\n");
-	      }
-	    else
-	      {
-		auto r=grammar.regexMatcher.match(input);
-		m=r.has_value();
-		
-		if(r and not r->matchedString.empty())
-		  {
-		    input={input.begin()+r->matchedString.length(),input.end()};
-		    iNextSymbol=grammar.iSymbolOfRegex[r->iToken];
-		    if(iNextSymbol!=grammar.iWhitespaceSymbol)
-		      {
-			symbols.emplace(symbols.begin()+cursor,iNextSymbol);
-			parsedSymbols.emplace_back(r->matchedString,std::vector<ParseTreeNode>{});
-		      }
-		    
-		    diagnostic("matched string: \"",r->matchedString,"\" corresponding to symbol ",iNextSymbol," \"",grammar.symbols[iNextSymbol].name,"\"\n");
-		    i++;
-		  }
-		else if(r)
-		  errorEmitter("token regex ",r->iToken," matched an empty string");
-		else
-		  errorEmitter("unable to match \"",input,"\"");
-	      }
-	  }
-	
-	if(m and iNextSymbol!=grammar.iWhitespaceSymbol)
-	  {
-	    size_t iTransition=0;
-	    while(iTransition<grammar.nTransitionsOfState(iState) and grammar.transitionOfState(iState,iTransition).iSymbol!=iNextSymbol)
-	      {
-		diagnostic("skipping transition ",grammar.describeStateTransition(iState,iTransition)," as ",grammar.transitionOfState(iState,iTransition).iSymbol,"!=",iNextSymbol,"\n");
-		iTransition++;
-	      }
-	    
-	    if(iTransition<grammar.nTransitionsOfState(iState))
-	      {
-		const GrammarTransition& t=grammar.transitionOfState(iState,iTransition);
-		const bool isReduce=t.type==GrammarTransition::Type::REDUCE;
-		
-		diagnostic("Going to use ",isReduce?"reduce ":"","transition: ",grammar.describeStateTransition(iState,iTransition),"\n");
-		if(isReduce)
-		  {
-		    const auto& production=
-		      grammar.production(t.iStateOrProduction);
-		    //states.pop_back();
-		    
-		    /// Beginning of the parse-node range consumed by the reduction
-		    const size_t beg=cursor-production.nRhs();
-		    
-		    /// End of the parse-node range consumed by the reduction
-		    const size_t end=cursor;
-		    symbols.erase(symbols.begin()+beg,symbols.begin()+end);
-		    
-		    /// Reduced node containing the rhs nodes consumed by this production
-		    ParseTreeNode res{production.iAction,{std::make_move_iterator(parsedSymbols.begin()+beg),std::make_move_iterator(parsedSymbols.begin()+end)}};
-		    parsedSymbols.erase(parsedSymbols.begin()+beg,parsedSymbols.begin()+end);
-		    parsedSymbols.insert(parsedSymbols.begin()+beg,res);
-		    
-		    states.erase(states.end()-production.nRhs(),states.end());
-		    
-		    cursor-=production.nRhs();
-		    if(std::optional<size_t> iAction=production.iAction)
-		      diagnostic("reduction ",grammar.actionStrings[*iAction],"\n");
-		    symbols.emplace(symbols.begin()+cursor,production.iLhs());
-		  }
-		else
-		  {
-		    states.push_back(t.iStateOrProduction);
-		    cursor++;
-		  }
-		
-		diagnostic("States:\n");
-		for(const size_t& iState : states)
-		  diagnostic("   ",iState,"\n");
-		
-		diagnostic("Symbols:\n");
-		for(size_t iiSymbol=0;iiSymbol<symbols.size();iiSymbol++)
-		  {
-		    /// Grammar symbol at the current parser-stack position
-		    const size_t iSymbol=symbols[iiSymbol];
-		    
-		    diagnostic("   ",iSymbol," ",grammar.symbols[iSymbol].name,"\n");
-		    if(cursor==iiSymbol)
-		      diagnostic(".......\n");
-		  }
-	      }
-	    else
-	      errorEmitter("Unable to find grammar transition");
-	  }
+        size_t traversed=0;
+        const auto match=grammar.regexMatcher.match(input,&traversed);
+        const auto begin=cursor;
+        const bool unfinished=recover and traversed==input.size() and
+          (not match or traversed>match->matchedString.size());
+        if(match and not match->matchedString.empty() and not unfinished)
+          {
+            const auto text=match->matchedString;
+            for(const char c : text)
+              cursor.advance(c);
+            input.remove_prefix(text.size());
+            const size_t symbol=grammar.iSymbolOfRegex[match->iToken];
+            if(symbol==grammar.iWhitespaceSymbol)
+              {
+                result.trivia.push_back(ShiftNode{.txt=text,.cursor=begin,.location=locate(begin),
+                  .range=SourceRange{begin,cursor}});
+                if(trivia.empty())
+                  triviaCursor=begin;
+                trivia=trivia.empty()?text:std::string_view(trivia.data(),trivia.size()+text.size());
+              }
+            else
+              {
+                result.tokens.push_back({symbol,ShiftNode{.txt=text,.cursor=begin,
+                  .leadingTrivia=trivia,.triviaCursor=trivia.empty()?begin:triviaCursor,
+                  .location=locate(begin),.range=SourceRange{begin,cursor}}});
+                trivia={};
+              }
+          }
+        else
+          {
+            if(not recover)
+              locate(cursor).error("unable to match input");
+            const size_t count=std::max(size_t{1},traversed);
+            for(size_t i=0;i<count;i++)
+              cursor.advance(input[i]);
+            input.remove_prefix(count);
+            while(not input.empty() and not grammar.regexMatcher.match(input))
+              {
+                cursor.advance(input.front());
+                input.remove_prefix(1);
+              }
+            result.diagnostics.push_back({{begin,cursor},unfinished?"Unterminated token":"unable to match input",{}});
+            trivia={};
+          }
       }
-    while(m and not(states.size()==1 and states[0]==0 and symbols.size()==2 and symbols[0]==grammar.iStartSymbol and symbols[1]==grammar.iEndSymbol and input.length()==0));
+    result.tokens.push_back({grammar.iEndSymbol,ShiftNode{.cursor=cursor,.location=locate(cursor),
+      .range=SourceRange{cursor,cursor}}});
     
-    std::vector<FlattenedParseTreeNode> tree;
-    auto fill=
-      [&tree](auto self,
-		 const ParseTreeNode& n)->void
-      {
-	for(const auto& s : n.subNodes)
-	  self(self,s);
-	
-	if(n.isReduce())
-	  tree.push_back(ReduceNode{.iAction=n.getIAction(),.nSubNodes=n.subNodes.size()});
-	else
-	  tree.push_back(ShiftNode{.txt=n.getShiftString()});
-      };
-    
-    fill(fill,parsedSymbols.front());
-    
-    return tree;
+    return result;
   }
   
-  /////////////////////////////////////////////////////////////////
+  /// LR state machine shared by strict parsing, recovery, and repair lookahead
+  template <typename G>
+  struct ParseMachine
+  {
+    /// Grammar tables, owned by the caller
+    const G& grammar;
+    
+    /// LR states, one more than the number of retained roots
+    std::vector<size_t> states{0};
+    
+    /// Parsed subtrees in stack order
+    std::vector<ParseTreeNode> roots;
+    
+    /// Forecasting copies keep states only
+    bool retainTrees{true};
+    
+    /// A reduction completed the start symbol with EOF lookahead
+    bool accepted{false};
+    
+    /// Find a transition in the current state
+    constexpr const GrammarTransition* transition(const size_t symbol) const
+    {
+      const GrammarTransition* found=nullptr;
+      for(size_t i=0;i<grammar.nTransitionsOfState(states.back()) and not found;i++)
+        if(const auto& entry=grammar.transitionOfState(states.back(),i);entry.iSymbol==symbol)
+          found=&entry;
+      
+      return found;
+    }
+    
+    /// Consume one token after all required reductions, or retain the failing state
+    constexpr bool offer(const ParseToken& token)
+    {
+      const SourceRange extent=token.shift.range.value_or(SourceRange{token.shift.cursor,token.shift.cursor});
+      bool consumed=false;
+      bool failed=false;
+      size_t steps=0;
+      while(not consumed and not failed and steps++<100000)
+        {
+          const auto* entry=transition(token.symbol);
+          if(not entry)
+            failed=true;
+          else if(entry->type!=GrammarTransition::Type::REDUCE)
+            {
+              states.push_back(entry->iStateOrProduction);
+              if(retainTrees)
+                roots.push_back({token.shift,{},token.symbol,extent});
+              consumed=true;
+            }
+          else
+            {
+              const auto& production=grammar.production(entry->iStateOrProduction);
+              const size_t count=production.nRhs();
+              ParseTreeNode node{production.iAction,{},production.iLhs(),extent};
+              if(retainTrees)
+                {
+                  const size_t begin=roots.size()-count;
+                  if(count)
+                    node.range={roots[begin].range.begin,roots.back().range.end};
+                  else
+                    node.range.end=node.range.begin;
+                  node.subNodes.assign(std::make_move_iterator(roots.begin()+begin),std::make_move_iterator(roots.end()));
+                  roots.resize(begin);
+                }
+              states.resize(states.size()-count);
+              if(production.iLhs()==grammar.iStartSymbol and token.symbol==grammar.iEndSymbol and states.size()==1)
+                {
+                  if(retainTrees)
+                    roots.push_back(std::move(node));
+                  consumed=true;
+                  accepted=true;
+                }
+              else if(const auto* next=transition(production.iLhs());next and next->type!=GrammarTransition::Type::REDUCE)
+                {
+                  states.push_back(next->iStateOrProduction);
+                  if(retainTrees)
+                    roots.push_back(std::move(node));
+                }
+              else
+                failed=true;
+            }
+        }
+      
+      return consumed;
+    }
+    
+    /// Copy the parser state without copying its trees
+    constexpr ParseMachine forecast() const
+    {
+      return ParseMachine{grammar,states,{},false};
+    }
+    
+    /// Query expected terminals through the same reduction logic as actual parsing
+    constexpr std::vector<size_t> expected() const
+    {
+      std::vector<size_t> result;
+      for(size_t i=0;i<grammar.symbols.size();i++)
+        if(grammar.symbols[i].type==BaseGrammarSymbol::Type::TERMINAL_SYMBOL or i==grammar.iEndSymbol)
+          {
+            auto copy=forecast();
+            if(copy.offer({i,ShiftNode{.range=SourceRange{}}}))
+              result.push_back(i);
+          }
+      
+      return result;
+    }
+  };
   
+  /// Parse tokenized input; editor clients supply grammar-specific insertion spellings
+  /// A bounded repair search inserts missing terminals or discards an offending token
+  template <typename G>
+  constexpr void parseTokens(const G& grammar,
+                            ParsedInput& input,
+                            const std::vector<ParseToken>& insertions={},
+                            const bool recover=false)
+  {
+    ParseMachine<G> machine{grammar};
+    size_t position=0;
+    size_t repairs=0;
+    while(position<input.tokens.size() and not machine.accepted and repairs<256)
+      {
+        const auto& token=input.tokens[position];
+        if(machine.offer(token))
+          position++;
+        else
+          {
+            const auto expected=machine.expected();
+            std::string message="Unable to find grammar transition before ";
+            message+=token.symbol==grammar.iEndSymbol?"end of input":grammar.symbols[token.symbol].diagnosticName();
+            if(not expected.empty())
+              {
+                message+="; expected ";
+                for(size_t i=0;i<expected.size();i++)
+                  {
+                    if(i)
+                      message+=", ";
+                    message+=expected[i]==grammar.iEndSymbol?"end of input":grammar.symbols[expected[i]].diagnosticName();
+                  }
+              }
+            if(not recover)
+              {
+                auto location=token.shift.location.value_or(SourceLocation{{},token.shift.cursor});
+                location.extent=std::max(size_t{1},token.shift.txt.size());
+                location.error(message);
+              }
+            input.diagnostics.push_back({*token.shift.range,std::move(message),expected});
+            
+            struct Plan
+            {
+              /// Forecast state after the proposed insertions
+              ParseMachine<G> state;
+              
+              /// Indices into the caller's insertion candidates
+              std::vector<size_t> inserted;
+            };
+            std::vector<Plan> plans{{machine.forecast(),{}}};
+            std::vector<size_t> repair;
+            for(size_t p=0;p<plans.size() and p<128 and repair.empty();p++)
+              if(plans[p].inserted.size()<4)
+                for(size_t i=0;i<insertions.size() and repair.empty();i++)
+                  {
+                    auto copy=plans[p].state.forecast();
+                    auto inserted=plans[p].inserted;
+                    if(copy.offer(insertions[i]))
+                      {
+                        inserted.push_back(i);
+                        auto probe=copy.forecast();
+                        if(probe.offer(token))
+                          repair=std::move(inserted);
+                        else if(plans.size()<128)
+                          plans.push_back({std::move(copy),std::move(inserted)});
+                      }
+                  }
+            
+            // EOF may require more closing tokens than one bounded repair plan
+            if(repair.empty() and token.symbol==grammar.iEndSymbol)
+              for(size_t i=0;i<insertions.size() and repair.empty();i++)
+                {
+                  auto copy=machine.forecast();
+                  if(copy.offer(insertions[i]))
+                    repair.push_back(i);
+                }
+            
+            if(not repair.empty())
+              for(const size_t i : repair)
+                {
+                  auto inserted=insertions[i];
+                  inserted.shift.cursor=token.shift.cursor;
+                  inserted.shift.location=token.shift.location;
+                  inserted.shift.range=SourceRange{token.shift.range->begin,token.shift.range->begin};
+                  machine.offer(inserted);
+                }
+            else if(token.symbol!=grammar.iEndSymbol)
+              position++;
+            else
+              position=input.tokens.size();
+            repairs++;
+          }
+      }
+    if(repairs>=256 and position<input.tokens.size())
+      input.diagnostics.push_back({*input.tokens[position].shift.range,
+        "Recovery limit reached; remaining input was not analyzed",{}});
+    input.roots=std::move(machine.roots);
+    input.accepted=machine.accepted;
+  }
+  
+  /// Flatten a retained subtree for the existing semantic-action executor
+  constexpr std::vector<FlattenedParseTreeNode> flattenParseTree(const ParseTreeNode& root)
+  {
+    std::vector<FlattenedParseTreeNode> result;
+    const auto fill=[&result](auto self,
+                             const ParseTreeNode& node)->void
+    {
+      for(const auto& child : node.subNodes)
+        self(self,child);
+      if(node.isShift())
+        result.push_back(std::get<ShiftNode>(node.data));
+      else
+        result.push_back(ReduceNode{node.getIAction(),node.subNodes.size(),node.range});
+    };
+    fill(fill,root);
+    
+    return result;
+  }
+  
+  /// Strict parsing uses precisely the same lexer and LR machine as editor recovery
+  template <typename G,
+            typename Locator=SourceLocator>
+  constexpr auto createParseTree(const G& grammar,
+                                const std::string_view input,
+                                const Locator& locate={})
+  {
+    auto parsed=tokenizeInput(grammar,input,locate);
+    parseTokens(grammar,parsed);
+    
+    return flattenParseTree(parsed.roots.front());
+  }
+
+  /// Default semantic-node observer for callers which do not retain AST source ranges
+  struct IgnoreParseNode
+  {
+    template <typename T>
+    void operator()(const T&,
+                    const SourceRange&) const
+    {
+    }
+  };
+
   /// Executes flattened parse trees using user-provided grammar actions
   /// T is the stack value type; ST wraps shifted strings, literal arguments,
   /// and empty values before constructing T
@@ -4032,6 +4380,16 @@ namespace pp::internal
     /// Shared ownership of a semantic value
     using StackEl=
       std::shared_ptr<T>;
+    
+    /// Wrap literal and empty values explicitly when ST provides a conversion factory
+    template <typename V>
+    static StackEl makeValue(const V& value)
+    {
+      if constexpr(requires {ST::fromValue(value);})
+        return std::make_shared<T>(ST::fromValue(value));
+      else
+        return std::make_shared<T>(ST{value});
+    }
     
     /// Semantic values in parsing order, or arguments passed to an action
     using Stack=
@@ -4105,7 +4463,12 @@ namespace pp::internal
     /// An intermediate reduction without an action produces an empty ST value;
     /// a final reduction without an action leaves the stack unchanged
     /// Callbacks returning null produce an empty ST value
-    StackEl execParseTree(const std::vector<FlattenedParseTreeNode>& pt) const
+    /// ST may define static fromShift(const ShiftNode&) to retain token metadata;
+    /// otherwise shifts are constructed from their text as before
+    /// ST may also define fromValue(value) to wrap literal arguments and empty results
+    template <typename Observe=IgnoreParseNode>
+    StackEl execParseTree(const std::vector<FlattenedParseTreeNode>& pt,
+                         const Observe& observe={}) const
     {
       /// Semantic values produced by shifts and reductions so far
       Stack stack;
@@ -4117,7 +4480,12 @@ namespace pp::internal
 	      /// Text matched by this shifted token
 	      const std::string_view s=sn->txt;
 	      diagnostic("Push string: ",s,"\n");
-	      stack.push_back(std::make_shared<T>(ST{std::string(s)}));
+              if constexpr(requires {ST::fromShift(*sn);})
+                stack.push_back(std::make_shared<T>(ST::fromShift(*sn)));
+              else
+	        stack.push_back(makeValue(std::string(s)));
+              if(sn->range)
+                observe(stack.back(),*sn->range);
 	    }
 	  else
 	    {
@@ -4139,7 +4507,7 @@ namespace pp::internal
 		  else
 		    {
 		      stack.erase(stack.end()-n,stack.end());
-		      stack.push_back(std::make_shared<T>(ST{std::monostate{}}));
+		      stack.push_back(makeValue(std::monostate{}));
 		    }
 		}
 	      else
@@ -4179,11 +4547,11 @@ namespace pp::internal
 			    },
 				  [](const std::string_view& st)->StackEl
 				  {
-				    return std::make_shared<T>(ST{(std::string)st});
+				    return makeValue(std::string(st));
 				  },
 				  [](const auto& any)->StackEl
 				  {
-				    return std::make_shared<T>(ST{any});
+				    return makeValue(any);
 				  }}
 			      ,pars[iArg]);
 			};
@@ -4198,10 +4566,12 @@ namespace pp::internal
 		  else
 		    {
 		      diagnostic(" no returned symbol, pushing an empty value\n");
-		      stack.push_back(std::make_shared<T>(ST{std::monostate{}}));
+		      stack.push_back(makeValue(std::monostate{}));
 		    }
 		}
 	      
+              if(not stack.empty())
+                observe(stack.back(),rn.range);
 	      diagnostic(" new stack size: ",stack.size(),"\n");
 	      
 	      diagnostic("Stack types:\n");
